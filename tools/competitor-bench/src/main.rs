@@ -183,6 +183,25 @@ fn audit(roots: &[String], languages: &[(Language, fn() -> TsLanguage)]) {
                 worst.push((gap.abs(), path.display().to_string(), reference, mine));
             }
         }
+        // A shortfall is a real miss, and the only way to fix one is to see
+        // the construct itself rather than a count, so print the import nodes
+        // of every file where tree-sitter found more than we did.
+        for (path, source) in &corpus {
+            let Some(tree) = parser.parse(source, None) else {
+                continue;
+            };
+            let reference = count_nodes(&tree, *language);
+            let mine = extract(source, *language).imports.len();
+            if reference <= mine {
+                continue;
+            }
+            let name = path.display().to_string();
+            let name = name.rsplit(['/', '\\']).next().unwrap_or("?").to_owned();
+            println!("      MISS {name}: tree-sitter {reference}, ours {mine}");
+            for text in import_texts(&tree, *language, source).iter().take(40) {
+                println!("           {text}");
+            }
+        }
         worst.sort_unstable_by(|left, right| right.0.cmp(&left.0));
         let agreement = if theirs == 0 {
             100.0
@@ -247,6 +266,36 @@ fn is_import(language: Language, node: &tree_sitter::Node) -> Option<bool> {
         Language::CSharp => node.kind() == "using_directive",
         _ => return None,
     })
+}
+
+/// The source text of every import node, one line each, for reading by eye.
+fn import_texts(tree: &tree_sitter::Tree, language: Language, source: &str) -> Vec<String> {
+    let mut cursor = tree.walk();
+    let mut found = Vec::new();
+    let mut descend = true;
+    loop {
+        if descend {
+            let node = cursor.node();
+            if is_import(language, &node) == Some(true) {
+                let text = source[node.byte_range()]
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                found.push(text.chars().take(110).collect::<String>());
+            }
+            if cursor.goto_first_child() {
+                continue;
+            }
+        }
+        if cursor.goto_next_sibling() {
+            descend = true;
+            continue;
+        }
+        if !cursor.goto_parent() {
+            return found;
+        }
+        descend = false;
+    }
 }
 
 fn count_nodes(tree: &tree_sitter::Tree, language: Language) -> usize {

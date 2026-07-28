@@ -181,7 +181,20 @@ impl Extractor<'_, '_> {
                 });
                 return Some(scan + 1);
             }
-            if self.punct(scan, ";") || self.punct(scan, "{") && !exporting && scan > cursor + 1 {
+            // Between the keyword and the specifier, an import clause holds
+            // only names and the punctuation that groups them. Anything else
+            // means this was never an import statement, and the scan must stop
+            // rather than run on into the code beneath it.
+            //
+            // The previous rule broke at any `{` that was not the second
+            // token, which silently lost every `import Default, { named }
+            // from 'x'` - the one shape that has a name before the brace.
+            if self.punct(scan, ";") {
+                break;
+            }
+            if self.kind(scan) == Some(TokenKind::Punctuation)
+                && !matches!(self.text(scan), "{" | "}" | "," | "*")
+            {
                 break;
             }
             scan += 1;
@@ -456,6 +469,37 @@ impl Extractor<'_, '_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_default_import_alongside_named_ones_is_still_an_import() {
+        use crate::syntax::Language;
+
+        let source = "import './sideEffect.js';\n\
+             import express from 'express';\n\
+             import logger, { logRequest, logAction } from './logger.js';\n\
+             import * as tty from 'node:tty';\n\
+             import type { Config } from './config';\n\
+             export { helper } from './helper.js';\n\
+             const meta = import.meta.url;\n";
+        let facts = super::extract(source, Language::TypeScript);
+        assert_eq!(
+            facts
+                .imports
+                .iter()
+                .map(|import| import.specifier.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "./sideEffect.js",
+                "express",
+                "./logger.js",
+                "node:tty",
+                "./config",
+                "./helper.js",
+            ],
+            "a name before the brace must not end the clause, and import.meta \
+             is not a module statement"
+        );
+    }
+
     /// React files are the ones where the lexer's assumptions are most
     /// fragile: `<` and `>` surround markup rather than comparing, and a
     /// slash inside JSX text must stay a division rather than opening a
