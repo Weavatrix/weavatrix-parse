@@ -39,6 +39,9 @@ struct Rules {
     modifiers: &'static [&'static str],
     /// Whether a bare `name(` at type-body depth declares a method.
     braced_members: bool,
+    /// Whether a function is declared by a return type rather than a keyword,
+    /// as C and C++ do: `int add(int a, int b) { }`.
+    typed_functions: bool,
     /// Whether a declaration is public by keyword rather than by convention.
     exported_keyword: Option<&'static str>,
 }
@@ -60,6 +63,7 @@ impl Rules {
                 imports: &["use", "mod"],
                 modifiers: &["pub", "async", "unsafe", "extern", "default"],
                 braced_members: false,
+                typed_functions: false,
                 exported_keyword: Some("pub"),
             },
             Language::Go => Self {
@@ -72,6 +76,7 @@ impl Rules {
                 imports: &["import"],
                 modifiers: &[],
                 braced_members: false,
+                typed_functions: false,
                 exported_keyword: None,
             },
             Language::Java | Language::CSharp => Self {
@@ -98,6 +103,7 @@ impl Rules {
                     "readonly",
                 ],
                 braced_members: true,
+                typed_functions: false,
                 exported_keyword: Some("public"),
             },
             Language::Solidity => Self {
@@ -119,6 +125,7 @@ impl Rules {
                     "pure", "view", "payable",
                 ],
                 braced_members: false,
+                typed_functions: false,
                 // Anything not marked internal or private is reachable from
                 // another contract, which is what export means here.
                 exported_keyword: Some("public"),
@@ -133,6 +140,7 @@ impl Rules {
                 imports: &["#include", "include"],
                 modifiers: &["static", "inline", "extern", "const", "virtual"],
                 braced_members: true,
+                typed_functions: true,
                 exported_keyword: None,
             },
         }
@@ -335,7 +343,12 @@ impl Extractor<'_, '_> {
                 cursor += 1;
                 continue;
             }
-            if self.tokens[cursor].line != line && specifier.is_empty() {
+            // A specifier ends with its line. Reading on would swallow what
+            // follows, which is how `#include <stdio.h>` consumed the function
+            // defined beneath it. While nothing has been read yet the scan may
+            // still cross a line, because `import {A} from` puts its path on
+            // the next one.
+            if self.tokens[cursor].line != line && !specifier.is_empty() {
                 break;
             }
             if matches!(
@@ -388,7 +401,9 @@ impl Extractor<'_, '_> {
             .iter()
             .find(|(word, _)| *word == keyword)
         else {
-            return self.braced_member(cursor, exported);
+            return self
+                .typed_function(cursor, exported)
+                .or_else(|| self.braced_member(cursor, exported));
         };
         let name_index = cursor + 1;
         if self.kind(name_index) != Some(TokenKind::Identifier) {
@@ -417,6 +432,92 @@ impl Extractor<'_, '_> {
             ),
         });
         Some(name_index + 1)
+    }
+
+    /// A C or C++ function, which no keyword introduces: what marks it is a
+    /// return type before the name and a body after the parameter list.
+    ///
+    /// Without this, `int add(int a, int b) { }` matched nothing and then fell
+    /// through to the call path, so every C function definition was recorded
+    /// as a call to itself - a self-edge in the graph, and no declaration for
+    /// dead-code analysis to find.
+    fn typed_function(&mut self, index: usize, exported: bool) -> Option<usize> {
+        if !self.rules.typed_functions || !self.punct(index + 1, "(") {
+            return None;
+        }
+        let name = self.text(index);
+        // A control structure is also a name followed by a parenthesis and a
+        // brace, and `else if (x) {` even has an identifier before it.
+        if matches!(
+            name,
+            "if" | "for" | "while" | "switch" | "return" | "catch" | "sizeof" | "do"
+        ) {
+            return None;
+        }
+        // What precedes the name decides: a return type, possibly through a
+        // `Class::` qualifier, means a definition; anything else means a call.
+        let (owner, type_index) = if self.punct(index - 1, ":")
+            && self.punct(index.checked_sub(2)?, ":")
+            && self.kind(index.checked_sub(3)?) == Some(TokenKind::Identifier)
+        {
+            (Some(self.text(index - 3).to_owned()), index.checked_sub(4)?)
+        } else {
+            (self.owner(), index.checked_sub(1)?)
+        };
+        let preceded_by_type = self.kind(type_index) == Some(TokenKind::Identifier)
+            && !matches!(self.text(type_index), "return" | "else" | "case" | "goto")
+            || self.punct(type_index, "*")
+            || self.punct(type_index, "&");
+        if !preceded_by_type {
+            return None;
+        }
+        // Only a body proves a definition. A prototype ends at a semicolon,
+        // and so does `return helper(x);` - so prototypes are left alone
+        // rather than risk reading every call as a declaration.
+        let mut cursor = index + 2;
+        let mut depth = 1_i32;
+        let limit = (index + 512).min(self.tokens.len());
+        while cursor < limit && depth > 0 {
+            if self.punct(cursor, "(") {
+                depth += 1;
+            } else if self.punct(cursor, ")") {
+                depth -= 1;
+            }
+            cursor += 1;
+        }
+        // `const`, `noexcept` and `override` may sit between `)` and the body.
+        while cursor < limit && self.kind(cursor) == Some(TokenKind::Identifier) {
+            cursor += 1;
+        }
+        if !self.punct(cursor, "{") {
+            return None;
+        }
+        let name = name.to_owned();
+        self.facts.declarations.push(Declaration {
+            name: name.clone(),
+            kind: if owner.is_some() {
+                DeclarationKind::Method
+            } else {
+                DeclarationKind::Function
+            },
+            span: self.span(index, index),
+            owner,
+            // C has no visibility keyword; a static function is file-local and
+            // everything else is linkable.
+            exported: exported || !self.is_static(index),
+        });
+        self.scopes.push(Scope {
+            name,
+            depth: None,
+            type_body: false,
+        });
+        Some(index + 1)
+    }
+
+    /// Whether the declaration ending at `index` was marked `static`.
+    fn is_static(&self, index: usize) -> bool {
+        let start = index.saturating_sub(4);
+        (start..index).any(|cursor| self.text(cursor) == "static")
     }
 
     /// A method written directly inside a class or struct body, in languages
@@ -712,6 +813,93 @@ mod tests {
                 |call| call.name == "transferFrom" && call.receiver.as_deref() == Some("token")
             ),
             "a call through a receiver keeps the receiver"
+        );
+    }
+
+    #[test]
+    fn c_functions_are_declarations_rather_than_calls_to_themselves() {
+        // No keyword introduces a C function, so every definition fell through
+        // to the call path: the graph gained a self-edge and lost the
+        // declaration that dead-code analysis looks for.
+        let source = "#include <stdio.h>\n\
+             int add(int a, int b) { return a + b; }\n\
+             static void run(void) { add(1, 2); }\n\
+             int main(void) { run(); return 0; }\n";
+        let facts = extract(source, Language::C);
+        let declared = facts
+            .declarations
+            .iter()
+            .map(|item| (item.name.as_str(), item.kind, item.exported))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            declared,
+            [
+                ("add", DeclarationKind::Function, true),
+                ("run", DeclarationKind::Function, false),
+                ("main", DeclarationKind::Function, true),
+            ],
+            "a static function is file-local; the rest are linkable"
+        );
+        assert_eq!(
+            facts
+                .references
+                .iter()
+                .map(|reference| reference.name.as_str())
+                .collect::<Vec<_>>(),
+            ["add", "run"],
+            "only the two real call sites, and no definition among them"
+        );
+    }
+
+    #[test]
+    fn an_include_does_not_swallow_the_line_beneath_it() {
+        let facts = extract(
+            "#include <stdio.h>\nint first(void) { return 0; }\n",
+            Language::C,
+        );
+        assert_eq!(
+            facts.imports.len(),
+            1,
+            "the include is one dependency, not a run-on statement"
+        );
+        assert!(
+            facts.declarations.iter().any(|item| item.name == "first"),
+            "the function under the include survives, got {:?}",
+            facts.declarations
+        );
+    }
+
+    #[test]
+    fn an_out_of_line_cpp_definition_belongs_to_its_class() {
+        let facts = extract(
+            "int helper(int x) { return x; }\nvoid Engine::start() { helper(1); }\n",
+            Language::Cpp,
+        );
+        let start = facts
+            .declarations
+            .iter()
+            .find(|item| item.name == "start")
+            .expect("the qualified definition is a declaration");
+        assert_eq!(start.kind, DeclarationKind::Method);
+        assert_eq!(start.owner.as_deref(), Some("Engine"));
+    }
+
+    #[test]
+    fn a_control_structure_is_not_a_function_definition() {
+        let source = "int pick(int x) {\n\
+             \x20 if (x) { return 1; }\n\
+             \x20 else if (x > 2) { return 2; }\n\
+             \x20 while (x) { x--; }\n\
+             \x20 return helper(x);\n\
+             }\n";
+        let names = declared(source, Language::C)
+            .into_iter()
+            .map(|(name, ..)| name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            ["pick"],
+            "an else-if has an identifier before it and still declares nothing"
         );
     }
 

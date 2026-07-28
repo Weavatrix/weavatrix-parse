@@ -103,6 +103,14 @@ impl Extractor<'_, '_> {
             return index + 1;
         }
         if self.punct(index, ">") {
+            // A script or style element holds another language, and its
+            // contents are the whole point of a single-file component: a Vue
+            // or Svelte file keeps its imports there and nowhere else.
+            if matches!(self.tag.as_str(), "script" | "style") {
+                let embedded = self.tag.clone();
+                self.tag.clear();
+                return self.embedded(index, &embedded);
+            }
             self.tag.clear();
             return index + 1;
         }
@@ -110,6 +118,81 @@ impl Extractor<'_, '_> {
             return index + 1;
         }
         self.attribute(index)
+    }
+
+    /// Extracts the body of a `<script>` or `<style>` element with the
+    /// extractor for the language it holds, and moves the facts into this
+    /// file's coordinates.
+    fn embedded(&mut self, close_of_open_tag: usize, tag: &str) -> usize {
+        let start_token = close_of_open_tag + 1;
+        let Some(start) = self.tokens.get(start_token).map(|token| token.start) else {
+            return close_of_open_tag + 1;
+        };
+        // The body runs to the `<` that opens the closing tag.
+        let mut end_token = start_token;
+        while end_token < self.tokens.len() {
+            if self.punct(end_token, "<")
+                && self.punct(end_token + 1, "/")
+                && self.text(end_token + 2).eq_ignore_ascii_case(tag)
+            {
+                break;
+            }
+            end_token += 1;
+        }
+        let end = self
+            .tokens
+            .get(end_token)
+            .map_or(self.source.len(), |token| token.start);
+        if end <= start {
+            return end_token.max(close_of_open_tag + 1);
+        }
+        let body = &self.source[start..end];
+        let language = if tag == "style" {
+            // Everything a component writes in a style block is at least SCSS,
+            // and reading plain CSS with SCSS rules costs only accepting `//`.
+            Language::Scss
+        } else {
+            Language::TypeScript
+        };
+        let inner = if tag == "style" {
+            crate::style::extract(body, language)
+        } else {
+            crate::script::extract(body, language)
+        };
+        let line = self.tokens[start_token].line;
+        let column = self.tokens[start_token].column;
+        self.absorb(inner, start, line, column);
+        end_token
+    }
+
+    /// Moves facts from a fragment's coordinates into the document's.
+    fn absorb(&mut self, mut inner: Facts, offset: usize, line: u32, column: u32) {
+        let shift = |span: &mut Span| {
+            // Only the fragment's first line shares a line with the document,
+            // so only it needs the column moved.
+            if span.line == 1 {
+                span.column += column - 1;
+            }
+            if span.end_line == 1 {
+                span.end_column += column - 1;
+            }
+            span.start += offset;
+            span.end += offset;
+            span.line += line - 1;
+            span.end_line += line - 1;
+        };
+        for item in &mut inner.declarations {
+            shift(&mut item.span);
+        }
+        for item in &mut inner.imports {
+            shift(&mut item.span);
+        }
+        for item in &mut inner.references {
+            shift(&mut item.span);
+        }
+        self.facts.declarations.append(&mut inner.declarations);
+        self.facts.imports.append(&mut inner.imports);
+        self.facts.references.append(&mut inner.references);
     }
 
     /// `name="value"`, `name='value'` or `name=value`.
@@ -217,6 +300,54 @@ mod tests {
             uses(source),
             [".panel", ".panel--wide", "#root", ".badge"],
             "a class attribute names one selector per word"
+        );
+    }
+
+    #[test]
+    fn a_single_file_component_keeps_its_imports_in_its_script_block() {
+        // Claiming `.vue` and `.svelte` while reading only tag attributes was
+        // worse than not claiming them: the file became a graph node with no
+        // dependencies at all, which reads as "this component imports
+        // nothing" rather than as "unsupported".
+        let source = "<template>\n\
+             \x20 <div class=\"card\"><Child /></div>\n\
+             </template>\n\
+             <script>\n\
+             import Child from './Child.vue';\n\
+             import { useStore } from '../store';\n\
+             function mounted() { useStore(); }\n\
+             </script>\n\
+             <style scoped>\n\
+             .card { color: red; }\n\
+             </style>\n";
+        let facts = extract(source);
+        assert_eq!(
+            facts
+                .imports
+                .iter()
+                .map(|import| import.specifier.as_str())
+                .collect::<Vec<_>>(),
+            ["./Child.vue", "../store"]
+        );
+        let mounted = facts
+            .declarations
+            .iter()
+            .find(|item| item.name == "mounted")
+            .expect("the script block declares a function");
+        assert_eq!(
+            mounted.span.line, 7,
+            "a fact from an embedded block must carry the document's line"
+        );
+        assert!(
+            facts.declarations.iter().any(|item| item.name == ".card"),
+            "the style block declares a selector"
+        );
+        assert!(
+            facts
+                .references
+                .iter()
+                .any(|reference| reference.name == ".card"),
+            "and the template uses it"
         );
     }
 
