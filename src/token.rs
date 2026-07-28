@@ -202,6 +202,42 @@ impl<'source> Tokenizer<'source> {
         }
     }
 
+    /// Length of the character literal at the cursor, or `None` when the quote
+    /// opens something else.
+    ///
+    /// A lifetime and a character literal start identically, so what tells
+    /// them apart is the closing quote: `'a'` has one and `'a` does not.
+    /// Deciding by the closing quote rather than by what follows the opening
+    /// one is what keeps `'"'` a literal - the case that silently shifted
+    /// every string boundary in a file when `'` was treated as punctuation.
+    fn char_literal_length(&self) -> Option<usize> {
+        if self.peek(1) == Some(b'\\') {
+            // The escaped character can itself be a quote, so the search for
+            // the closing quote starts after it.
+            let mut offset = 3;
+            while offset < 12 {
+                match self.peek(offset) {
+                    Some(b'\'') => return Some(offset + 1),
+                    Some(b'\n') | None => return None,
+                    _ => offset += 1,
+                }
+            }
+            return None;
+        }
+        let first = self.peek(1)?;
+        if first == b'\'' || first == b'\n' {
+            return None;
+        }
+        // One character, however many bytes it takes to write.
+        let width = match first {
+            0x00..=0x7f => 1,
+            0xc0..=0xdf => 2,
+            0xe0..=0xef => 3,
+            _ => 4,
+        };
+        (self.peek(1 + width) == Some(b'\'')).then_some(2 + width)
+    }
+
     /// Consumes a raw string such as `r"..."` or `r#"..."#`.
     fn scan_raw_string(&mut self) -> bool {
         let mut hashes = 0;
@@ -371,6 +407,15 @@ impl Tokenizer<'_> {
             };
             self.value_before = true;
             return Some(self.emit(kind, start, line, column));
+        }
+
+        if self.syntax.char_literals
+            && current == b'\''
+            && let Some(length) = self.char_literal_length()
+        {
+            self.advance(length);
+            self.value_before = true;
+            return Some(self.emit(TokenKind::String, start, line, column));
         }
 
         if self.syntax.quotes.contains(&(current as char)) {

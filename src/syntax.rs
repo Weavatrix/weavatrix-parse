@@ -77,6 +77,7 @@ impl Language {
                 regex_literals: true,
                 raw_strings: false,
                 triple_quotes: false,
+                char_literals: false,
                 significant_indentation: false,
                 identifier_extra: &['$', '_'],
             },
@@ -91,6 +92,7 @@ impl Language {
                 regex_literals: false,
                 raw_strings: true,
                 triple_quotes: false,
+                char_literals: true,
                 significant_indentation: false,
                 identifier_extra: &['_'],
             },
@@ -104,6 +106,7 @@ impl Language {
                 regex_literals: false,
                 raw_strings: false,
                 triple_quotes: true,
+                char_literals: false,
                 significant_indentation: true,
                 identifier_extra: &['_'],
             },
@@ -117,6 +120,7 @@ impl Language {
                 regex_literals: false,
                 raw_strings: false,
                 triple_quotes: false,
+                char_literals: false,
                 significant_indentation: false,
                 identifier_extra: &['_'],
             },
@@ -132,6 +136,7 @@ impl Language {
                 regex_literals: false,
                 raw_strings: false,
                 triple_quotes: false,
+                char_literals: false,
                 significant_indentation: false,
                 identifier_extra: &['_', '$'],
             },
@@ -145,6 +150,7 @@ impl Language {
                 regex_literals: false,
                 raw_strings: false,
                 triple_quotes: false,
+                char_literals: false,
                 significant_indentation: false,
                 identifier_extra: &['_'],
             },
@@ -158,6 +164,7 @@ impl Language {
                 regex_literals: false,
                 raw_strings: false,
                 triple_quotes: false,
+                char_literals: false,
                 significant_indentation: true,
                 identifier_extra: &['_', '-', '.'],
             },
@@ -187,6 +194,11 @@ pub struct Syntax {
     pub raw_strings: bool,
     /// Whether `"""..."""` spans lines.
     pub triple_quotes: bool,
+    /// Whether `'` opens a character literal that a lifetime is also written
+    /// with. Rust needs this: `'a` is a lifetime and `'"'` is a quote
+    /// character, and treating `'` as an ordinary quote or as ordinary
+    /// punctuation gets one of the two wrong.
+    pub char_literals: bool,
     pub significant_indentation: bool,
     pub identifier_extra: &'static [char],
 }

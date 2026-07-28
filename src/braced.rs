@@ -223,6 +223,13 @@ impl Extractor<'_, '_> {
         let mut index = start;
         while self.rules.modifiers.contains(&self.text(index)) {
             index += 1;
+            // `pub(crate) use x;` carries a parenthesised visibility scope.
+            if self.punct(index, "(") {
+                while index < self.tokens.len() && !self.punct(index, ")") {
+                    index += 1;
+                }
+                index += 1;
+            }
         }
         let word = self.text(index);
         if !self.rules.imports.contains(&word) {
@@ -286,6 +293,8 @@ impl Extractor<'_, '_> {
             }
             cursor += 1;
         }
+        // `use a::b::{c, d}` stops at the brace, leaving a separator behind.
+        let specifier = specifier.trim_end_matches([':', '.']).to_owned();
         if specifier.is_empty() {
             return None;
         }
@@ -470,6 +479,55 @@ mod tests {
             specifiers,
             ["self::engine", "self::helper", "crate::engine::Driver"],
             "a mod with a body defines the module here rather than including a file"
+        );
+    }
+
+    #[test]
+    fn a_character_literal_holding_a_quote_does_not_shift_the_rest_of_the_file() {
+        // A lifetime and a character literal open the same way, so this used
+        // to leave `"` opening a string that ran on for hundreds of lines and
+        // swallowed every declaration after it.
+        let source = "fn classify<'a>(head: &'a str) -> bool {\n\
+             \x20   head.contains(['.', '\"', '+']) || head.starts_with('@')\n\
+             }\n\
+             mod tests {\n\
+             \x20   use super::classify;\n\
+             }\n";
+        let facts = extract(source, Language::Rust);
+        assert_eq!(
+            facts
+                .imports
+                .iter()
+                .map(|import| import.specifier.as_str())
+                .collect::<Vec<_>>(),
+            ["super::classify"],
+            "the import after the quote character is still reachable"
+        );
+        assert!(
+            facts
+                .declarations
+                .iter()
+                .any(|item| item.name == "classify"),
+            "the lifetime is punctuation, not an unterminated literal"
+        );
+    }
+
+    #[test]
+    fn a_restricted_visibility_still_leads_to_the_import() {
+        assert_eq!(
+            extract("pub(crate) use transport::serve_stdio;\n", Language::Rust)
+                .imports
+                .len(),
+            1,
+            "the parenthesised scope after pub must not hide the use"
+        );
+    }
+
+    #[test]
+    fn a_grouped_use_names_the_module_without_its_separator() {
+        assert_eq!(
+            extract("use super::support::{one, two};\n", Language::Rust).imports[0].specifier,
+            "super::support"
         );
     }
 
