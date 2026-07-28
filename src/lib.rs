@@ -14,8 +14,11 @@
 //!
 //! No dependencies, no generated grammars, no C, `unsafe` forbidden.
 
+pub mod facts;
+pub mod script;
 pub mod syntax;
 pub mod token;
 
+pub use facts::{Call, Declaration, DeclarationKind, Facts, Import, Span};
 pub use syntax::{Language, Syntax};
 pub use token::{Mode, Token, TokenKind, Tokenizer, tokenize, tokenize_lite};
