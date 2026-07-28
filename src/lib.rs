@@ -25,3 +25,31 @@ pub mod token;
 pub use facts::{Call, Declaration, DeclarationKind, Facts, Import, Span};
 pub use syntax::{Language, Syntax};
 pub use token::{Mode, Token, TokenKind, Tokenizer, tokenize, tokenize_lite};
+
+/// Extracts structural facts from one source file.
+///
+/// Languages this crate can tokenize but has no structural model for yet -
+/// shell and YAML - return no facts rather than guesses.
+#[must_use]
+pub fn extract(source: &str, language: Language) -> Facts {
+    match language {
+        Language::JavaScript | Language::TypeScript => script::extract(source, language),
+        Language::Python => python::extract(source),
+        Language::Sql => sql::extract(source),
+        Language::Rust
+        | Language::Go
+        | Language::Java
+        | Language::CSharp
+        | Language::C
+        | Language::Cpp => braced::extract(source, language),
+        _ => Facts::default(),
+    }
+}
+
+/// Extracts structural facts from a file, choosing the language by extension.
+#[must_use]
+pub fn extract_path(path: &str, source: &str) -> Option<Facts> {
+    let extension = path.rsplit_once('.')?.1;
+    let language = Language::from_extension(extension)?;
+    Some(extract(source, language))
+}
