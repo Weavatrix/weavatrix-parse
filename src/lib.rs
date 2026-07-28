@@ -21,6 +21,7 @@ pub mod hcl;
 pub mod markup;
 pub mod python;
 pub mod script;
+pub mod shell;
 pub mod sql;
 pub mod style;
 pub mod syntax;
@@ -41,6 +42,7 @@ pub fn extract(source: &str, language: Language) -> Facts {
         Language::Python => python::extract(source),
         Language::Sql => sql::extract(source),
         Language::Terraform => hcl::extract(source),
+        Language::Bash => shell::extract(source),
         Language::Markdown | Language::Mdx | Language::ReStructuredText | Language::AsciiDoc => {
             docs::extract(source, language)
         }

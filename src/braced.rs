@@ -631,6 +631,38 @@ impl Extractor<'_, '_> {
         Some(index + 1)
     }
 
+    /// The type names inside `<...>` at `index`, and how many tokens they
+    /// occupy, or nothing when this is a comparison rather than a type list.
+    ///
+    /// A closing angle bracket is what tells the two apart: `a < b` never
+    /// reaches one before the statement ends.
+    fn type_arguments(&self, index: usize) -> (Vec<String>, usize) {
+        if !self.punct(index, "<") {
+            return (Vec::new(), 0);
+        }
+        let limit = (index + 32).min(self.tokens.len());
+        let mut names = Vec::new();
+        let mut cursor = index + 1;
+        let mut depth = 1_i32;
+        while cursor < limit && depth > 0 {
+            if self.punct(cursor, "<") {
+                depth += 1;
+            } else if self.punct(cursor, ">") {
+                depth -= 1;
+            } else if self.punct(cursor, ";") || self.punct(cursor, "{") {
+                // A statement ended, so the angle bracket was an operator.
+                return (Vec::new(), 0);
+            } else if self.kind(cursor) == Some(TokenKind::Identifier) {
+                names.push(self.text(cursor).to_owned());
+            }
+            cursor += 1;
+        }
+        if depth > 0 {
+            return (Vec::new(), 0);
+        }
+        (names, cursor - index)
+    }
+
     /// Whether the declaration ending at `index` was marked `static`.
     fn is_static(&self, index: usize) -> bool {
         let start = index.saturating_sub(4);
@@ -681,7 +713,12 @@ impl Extractor<'_, '_> {
     }
 
     fn call(&mut self, index: usize) -> Option<usize> {
-        if !self.punct(index + 1, "(") {
+        // `modelBuilder.Entity<Order>()` is a call whose parenthesis does not
+        // follow the name. The type argument is what an object-relational
+        // mapper names the entity with, so it is worth reaching.
+        let type_arguments = self.type_arguments(index + 1);
+        let open = index + 1 + type_arguments.1;
+        if !self.punct(open, "(") {
             return None;
         }
         let name = self.text(index).to_owned();
@@ -695,8 +732,18 @@ impl Extractor<'_, '_> {
             && (self.punct(index - 1, ".") || self.punct(index - 1, ":"))
             && self.kind(index - 2) == Some(TokenKind::Identifier))
         .then(|| self.text(index - 2).to_owned());
+        for argument in type_arguments.0 {
+            self.facts.references.push(Reference {
+                name: argument,
+                kind: ReferenceKind::Uses,
+                receiver: None,
+                span: self.span(index, index),
+                owner: self.owner(),
+                string_arguments: Vec::new(),
+            });
+        }
         let mut arguments = Vec::new();
-        let mut scan = index + 2;
+        let mut scan = open + 1;
         let mut depth = 1_i32;
         let limit = (index + 256).min(self.tokens.len());
         while scan < limit && depth > 0 {
@@ -724,7 +771,7 @@ impl Extractor<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::extract;
-    use crate::facts::DeclarationKind;
+    use crate::facts::{DeclarationKind, ReferenceKind};
     use crate::syntax::Language;
 
     fn declared(
@@ -1068,6 +1115,40 @@ mod tests {
             .expect("the qualified definition is a declaration");
         assert_eq!(start.kind, DeclarationKind::Method);
         assert_eq!(start.owner.as_deref(), Some("Engine"));
+    }
+
+    #[test]
+    fn a_type_argument_reaches_the_name_a_mapper_configures() {
+        // An object-relational mapper names the entity in the type argument
+        // and the table in the string one, so a framework layer needs both to
+        // connect them - and the parenthesis does not follow the name.
+        let facts = extract(
+            "modelBuilder.Entity<Order>().ToTable(\"orders\");\nif (a < b && c > d) {}\n",
+            Language::CSharp,
+        );
+        let seen = facts
+            .references
+            .iter()
+            .map(|reference| {
+                (
+                    reference.name.as_str(),
+                    reference.kind,
+                    reference.string_arguments.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            seen.contains(&("Order", ReferenceKind::Uses, Vec::new())),
+            "the entity type is reachable, got {seen:?}"
+        );
+        assert!(
+            seen.contains(&("ToTable", ReferenceKind::Call, vec!["orders".to_owned()])),
+            "and so is the table it maps to, got {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|(name, ..)| *name == "b"),
+            "a comparison is not a type argument list, got {seen:?}"
+        );
     }
 
     #[test]
