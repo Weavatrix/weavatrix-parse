@@ -124,10 +124,10 @@ impl Extractor<'_, '_> {
             self.depth -= 1;
             return index + 1;
         }
-        if self.is(index, "import") || self.is(index, "export") {
-            if let Some(next) = self.module_statement(index) {
-                return next;
-            }
+        if (self.is(index, "import") || self.is(index, "export"))
+            && let Some(next) = self.module_statement(index)
+        {
+            return next;
         }
         if self.kind(index) == Some(TokenKind::Identifier) {
             if let Some(next) = self.declaration(index) {

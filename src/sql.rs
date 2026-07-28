@@ -137,15 +137,15 @@ impl Extractor<'_, '_> {
         if self.kind(index) != Some(TokenKind::Identifier) {
             return index + 1;
         }
-        if self.word(index, "create") || self.word(index, "alter") {
-            if let Some(next) = self.create(index) {
-                return next;
-            }
+        if (self.word(index, "create") || self.word(index, "alter"))
+            && let Some(next) = self.create(index)
+        {
+            return next;
         }
-        if self.any_word(index, REFERENCES) {
-            if let Some(next) = self.reference(index) {
-                return next;
-            }
+        if self.any_word(index, REFERENCES)
+            && let Some(next) = self.reference(index)
+        {
+            return next;
         }
         if let Some(next) = self.call(index) {
             return next;

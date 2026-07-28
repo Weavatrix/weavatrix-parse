@@ -110,10 +110,10 @@ impl Extractor<'_, '_> {
         if self.is(index, "class") {
             return self.definition(index, index + 1, DeclarationKind::Class, column);
         }
-        if self.is(index, "import") || self.is(index, "from") {
-            if let Some(next) = self.import(index) {
-                return next;
-            }
+        if (self.is(index, "import") || self.is(index, "from"))
+            && let Some(next) = self.import(index)
+        {
+            return next;
         }
         if let Some(next) = self.call(index) {
             return next;
