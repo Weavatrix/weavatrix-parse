@@ -54,8 +54,22 @@ covers eighteen languages and formats:
 | Web | HTML, CSS/SCSS/Less, Vue and Svelte components |
 | Configuration and markup | Terraform/HCL, XML |
 | Documents | Markdown, MDX, reStructuredText, AsciiDoc |
+| Shell | Bash, sh, zsh |
 
-Bash and YAML are tokenized but have no structural model yet.
+YAML is tokenized but has no structural model yet.
+
+## What this crate does not decide
+
+It extracts what the source says, not what a framework means by it.
+`mongoose.model("User", schema)` comes out as a call with receiver
+`mongoose`, name `model` and string argument `User`; `@KafkaListener(topics =
+"orders")` as a call named `KafkaListener` with argument `orders`;
+`modelBuilder.Entity<Order>().ToTable("orders")` as a use of the type `Order`
+beside a call carrying `orders`. Turning those into "this file declares a
+collection", "this file subscribes to a topic" or "this entity maps to that
+table" is framework knowledge — it changes with library versions and there
+are hundreds of libraries — so it belongs in the consumer, and this crate
+stays a language layer that does not need updating when a library does.
 
 React is not a separate language here but is the case where the lexer's
 assumptions are most fragile, so it is pinned by test: inside JSX a `/` must
