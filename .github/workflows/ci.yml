@@ -27,6 +27,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install MSRV toolchain
-        run: rustup toolchain install 1.85 --profile minimal
+        run: rustup toolchain install 1.88 --profile minimal
       - name: Build at MSRV
-        run: cargo +1.85 build --locked
+        run: cargo +1.88 build --locked

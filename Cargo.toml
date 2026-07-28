@@ -2,7 +2,9 @@
 name = "weavatrix-parse"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# Let-chains, which the tokenizer and extractors use, are stable from 1.88 on
+# edition 2024 - not from 1.85, where the edition itself landed.
+rust-version = "1.88"
 description = "Dependency-free source tokenizer and structural extractor for repository intelligence"
 license = "MIT"
 authors = ["Sergii Ziborov <sergii.ziborov@gmail.com>"]
