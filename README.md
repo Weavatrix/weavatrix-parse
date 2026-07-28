@@ -44,9 +44,21 @@ hash delimiters, triple-quoted Python strings, SQL's doubled-quote escape,
 significant indentation, whether a slash opens a regular expression or divides,
 and whether a quote opens a character literal or a lifetime.
 
-Structural extraction — declarations, imports and calls with spans — covers
-JavaScript, TypeScript, Python, Rust, Go, Java, C#, C, C++, SQL and Solidity.
-Bash and YAML are tokenized but have no structural model yet.
+Structural extraction — declarations, imports and references with spans —
+covers JavaScript, TypeScript, Python, Rust, Go, Java, C#, C, C++, SQL,
+Solidity, HTML and CSS/SCSS/Less. Bash and YAML are tokenized but have no
+structural model yet.
+
+React is not a separate language here but is the case where the lexer's
+assumptions are most fragile, so it is pinned by test: inside JSX a `/` must
+stay a division rather than opening a regular expression that would swallow
+the rest of the file, and `<` must not be read as a comparison.
+
+HTML and CSS earn their place by producing an edge neither can produce alone.
+A stylesheet declares selectors; a document's `class` and `id` attributes use
+them; the two resolve to each other. Nesting is read from tokens rather than
+flat rules, so `.card { &__title { } }` declares `.card__title` — a name that
+appears nowhere in the source as written.
 
 The brace-scoped languages share one walk driven by keyword tables, so adding
 one of them costs a table rather than a scanner: Solidity was added for two

@@ -94,7 +94,7 @@ fn main() {
                     .iter()
                     .map(|(_, source)| {
                         let facts = extract(source, *language);
-                        facts.declarations.len() + facts.imports.len() + facts.calls.len()
+                        facts.declarations.len() + facts.imports.len() + facts.references.len()
                     })
                     .sum::<usize>()
             });
@@ -361,4 +361,5 @@ fn visit(path: &Path, language: Language, corpus: &mut Vec<Entry>, total: &mut u
         }
     }
 }
+
 
