@@ -32,6 +32,9 @@ pub enum DeclarationKind {
     Module,
     Struct,
     Trait,
+    Table,
+    View,
+    Procedure,
 }
 
 /// A named declaration and where it was written.

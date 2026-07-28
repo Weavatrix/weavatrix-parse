@@ -18,6 +18,7 @@ pub mod braced;
 pub mod facts;
 pub mod python;
 pub mod script;
+pub mod sql;
 pub mod syntax;
 pub mod token;
 
