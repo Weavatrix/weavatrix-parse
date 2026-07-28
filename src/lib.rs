@@ -16,13 +16,15 @@
 
 pub mod braced;
 pub mod facts;
+pub mod markup;
 pub mod python;
 pub mod script;
 pub mod sql;
+pub mod style;
 pub mod syntax;
 pub mod token;
 
-pub use facts::{Call, Declaration, DeclarationKind, Facts, Import, Span};
+pub use facts::{Declaration, DeclarationKind, Facts, Import, Reference, ReferenceKind, Span};
 pub use syntax::{Language, Syntax};
 pub use token::{Mode, Token, TokenKind, Tokenizer, tokenize, tokenize_lite};
 
@@ -36,6 +38,8 @@ pub fn extract(source: &str, language: Language) -> Facts {
         Language::JavaScript | Language::TypeScript => script::extract(source, language),
         Language::Python => python::extract(source),
         Language::Sql => sql::extract(source),
+        Language::Html => markup::extract(source),
+        Language::Css | Language::Scss => style::extract(source, language),
         Language::Rust
         | Language::Go
         | Language::Java

@@ -7,7 +7,7 @@
 //! walk serves all seven instead of seven near-identical scanners - and adding
 //! the next such language costs a table, not a scanner.
 
-use crate::facts::{Call, Declaration, DeclarationKind, Facts, Import, Span};
+use crate::facts::{Declaration, DeclarationKind, Facts, Import, Reference, ReferenceKind, Span};
 use crate::syntax::Language;
 use crate::token::{Mode, Token, TokenKind, Tokenizer};
 
@@ -491,7 +491,8 @@ impl Extractor<'_, '_> {
             }
             scan += 1;
         }
-        self.facts.calls.push(Call {
+        self.facts.references.push(Reference {
+            kind: ReferenceKind::Call,
             name,
             receiver,
             span: self.span(index, index),
@@ -707,7 +708,7 @@ mod tests {
             );
         }
         assert!(
-            facts.calls.iter().any(
+            facts.references.iter().any(
                 |call| call.name == "transferFrom" && call.receiver.as_deref() == Some("token")
             ),
             "a call through a receiver keeps the receiver"

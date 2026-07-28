@@ -10,7 +10,7 @@
 //! Keywords are matched case-insensitively because SQL is written both ways,
 //! often in the same file.
 
-use crate::facts::{Call, Declaration, DeclarationKind, Facts, Import, Span};
+use crate::facts::{Declaration, DeclarationKind, Facts, Import, Reference, ReferenceKind, Span};
 use crate::syntax::Language;
 use crate::token::{Mode, Token, TokenKind, Tokenizer};
 
@@ -310,7 +310,8 @@ impl Extractor<'_, '_> {
             }
             scan += 1;
         }
-        self.facts.calls.push(Call {
+        self.facts.references.push(Reference {
+            kind: ReferenceKind::Call,
             name,
             receiver: None,
             span: self.span(index, index),

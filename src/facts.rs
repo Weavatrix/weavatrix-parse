@@ -35,6 +35,8 @@ pub enum DeclarationKind {
     Table,
     View,
     Procedure,
+    /// A CSS class or id selector, named with its leading `.` or `#`.
+    Selector,
 }
 
 /// A named declaration and where it was written.
@@ -61,15 +63,32 @@ pub struct Import {
     pub reexport: bool,
 }
 
-/// A call site.
+/// Why one name mentions another.
+///
+/// A call and an `extends` clause are both "this name depends on that name",
+/// and separating them into different fact types would force every consumer to
+/// walk two collections to answer one question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ReferenceKind {
+    Call,
+    Inherits,
+    Implements,
+    /// A name used without being called, as an HTML `class` attribute uses a
+    /// CSS selector.
+    Uses,
+}
+
+/// One name mentioning another.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Call {
-    /// The called name, without its receiver.
+pub struct Reference {
+    /// The referenced name, without its receiver.
     pub name: String,
+    pub kind: ReferenceKind,
     /// Receiver written before the final dot, when there was one.
     pub receiver: Option<String>,
     pub span: Span,
-    /// Enclosing declaration the call was written in.
+    /// Enclosing declaration the reference was written in.
     pub owner: Option<String>,
     /// Literal string arguments, which carry routes, topics and table names.
     pub string_arguments: Vec<String>,
@@ -80,5 +99,15 @@ pub struct Call {
 pub struct Facts {
     pub declarations: Vec<Declaration>,
     pub imports: Vec<Import>,
-    pub calls: Vec<Call>,
+    pub references: Vec<Reference>,
+}
+
+impl Facts {
+    /// Just the call sites, for consumers that want a call graph and nothing
+    /// else.
+    pub fn calls(&self) -> impl Iterator<Item = &Reference> {
+        self.references
+            .iter()
+            .filter(|reference| reference.kind == ReferenceKind::Call)
+    }
 }

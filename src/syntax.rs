@@ -21,6 +21,11 @@ pub enum Language {
     Cpp,
     Sql,
     Solidity,
+    Html,
+    Css,
+    /// SCSS, Sass and Less, which differ from CSS by allowing `//` comments
+    /// and nesting selectors.
+    Scss,
     Bash,
     Yaml,
 }
@@ -41,6 +46,9 @@ impl Language {
             "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => Self::Cpp,
             "sql" | "psql" => Self::Sql,
             "sol" => Self::Solidity,
+            "html" | "htm" | "xhtml" | "vue" | "svelte" => Self::Html,
+            "css" => Self::Css,
+            "scss" | "sass" | "less" => Self::Scss,
             "sh" | "bash" | "zsh" => Self::Bash,
             "yaml" | "yml" => Self::Yaml,
             _ => return None,
@@ -61,12 +69,20 @@ impl Language {
             Self::Cpp => "cpp",
             Self::Sql => "sql",
             Self::Solidity => "solidity",
+            Self::Html => "html",
+            Self::Css => "css",
+            Self::Scss => "scss",
             Self::Bash => "bash",
             Self::Yaml => "yaml",
         }
     }
 
     /// The lexical rules this language follows.
+    // This is a table, not an algorithm: one arm per language, each a literal.
+    // Splitting it to satisfy a line count would scatter the table across
+    // functions and make the languages harder to compare against each other,
+    // which is the whole point of writing them as data.
+    #[allow(clippy::too_many_lines)]
     #[must_use]
     pub const fn syntax(self) -> Syntax {
         match self {
@@ -144,6 +160,55 @@ impl Language {
                 char_literals: false,
                 significant_indentation: false,
                 identifier_extra: &['_', '$'],
+            },
+            // A tag is punctuation and identifiers around a quoted value, so
+            // the ordinary token model fits once `-` and `:` are allowed in a
+            // name: `data-count`, `aria-label`, `xlink:href`, `v-on:click`.
+            Self::Html => Syntax {
+                line_comments: &[],
+                block_comment: Some(("<!--", "-->")),
+                nested_block_comments: false,
+                quotes: &['"', '\''],
+                interpolated_quote: None,
+                // HTML escapes with entities rather than backslashes, so a
+                // backslash before a quote does not extend the value.
+                escapes: false,
+                regex_literals: false,
+                raw_strings: false,
+                triple_quotes: false,
+                char_literals: false,
+                significant_indentation: false,
+                identifier_extra: &['_', '-', ':', '.', '@'],
+            },
+            // CSS has no line comment: `//` is invalid there, and treating it
+            // as one would swallow the rest of a line in a valid stylesheet.
+            Self::Css => Syntax {
+                line_comments: &[],
+                block_comment: Some(("/*", "*/")),
+                nested_block_comments: false,
+                quotes: &['"', '\''],
+                interpolated_quote: None,
+                escapes: true,
+                regex_literals: false,
+                raw_strings: false,
+                triple_quotes: false,
+                char_literals: false,
+                significant_indentation: false,
+                identifier_extra: &['_', '-'],
+            },
+            Self::Scss => Syntax {
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                nested_block_comments: false,
+                quotes: &['"', '\''],
+                interpolated_quote: None,
+                escapes: true,
+                regex_literals: false,
+                raw_strings: false,
+                triple_quotes: false,
+                char_literals: false,
+                significant_indentation: false,
+                identifier_extra: &['_', '-', '$', '@'],
             },
             Self::Bash => Syntax {
                 line_comments: &["#"],

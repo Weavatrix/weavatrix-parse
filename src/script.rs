@@ -9,7 +9,7 @@
 //! identifier followed by `(`, not by building an expression tree, because no
 //! consumer of these facts asks about precedence.
 
-use crate::facts::{Call, Declaration, DeclarationKind, Facts, Import, Span};
+use crate::facts::{Declaration, DeclarationKind, Facts, Import, Reference, ReferenceKind, Span};
 use crate::syntax::Language;
 use crate::token::{Mode, Token, TokenKind, Tokenizer};
 
@@ -442,7 +442,8 @@ impl Extractor<'_, '_> {
                 reexport: false,
             });
         }
-        self.facts.calls.push(Call {
+        self.facts.references.push(Reference {
+            kind: ReferenceKind::Call,
             name,
             receiver,
             span: self.span(index, index),
@@ -455,6 +456,67 @@ impl Extractor<'_, '_> {
 
 #[cfg(test)]
 mod tests {
+    /// React files are the ones where the lexer's assumptions are most
+    /// fragile: `<` and `>` surround markup rather than comparing, and a
+    /// slash inside JSX text must stay a division rather than opening a
+    /// regular expression that would swallow the rest of the file.
+    #[test]
+    fn jsx_does_not_derail_the_token_stream() {
+        use crate::syntax::Language;
+        use crate::token::{TokenKind, tokenize};
+
+        let source = "import React from 'react';\n\
+             import { Button } from './Button';\n\
+             export function Panel({ items, onPick }) {\n\
+             \x20 const ratio = items.length / 2;\n\
+             \x20 return (\n\
+             \x20   <div className=\"panel\" data-count={items.length}>\n\
+             \x20     {items.map((item) => (\n\
+             \x20       <Button key={item.id} onClick={() => onPick(item)}>\n\
+             \x20         {item.label} / {ratio}\n\
+             \x20       </Button>\n\
+             \x20     ))}\n\
+             \x20   </div>\n\
+             \x20 );\n\
+             }\n\
+             export const Footer = () => <footer>done</footer>;\n";
+        let tokens = tokenize(source, Language::TypeScript);
+        assert_eq!(
+            tokens
+                .iter()
+                .map(|token| token.text(source))
+                .collect::<String>(),
+            source,
+            "the stream must still reproduce the file"
+        );
+        assert!(
+            !tokens
+                .iter()
+                .any(|token| matches!(token.kind, TokenKind::Regex | TokenKind::Unterminated)),
+            "no division in JSX may be read as a regular expression"
+        );
+        let facts = super::extract(source, Language::TypeScript);
+        assert_eq!(
+            facts
+                .imports
+                .iter()
+                .map(|import| import.specifier.as_str())
+                .collect::<Vec<_>>(),
+            ["react", "./Button"]
+        );
+        for name in ["Panel", "Footer"] {
+            assert!(
+                facts.declarations.iter().any(|item| item.name == name),
+                "{name} must survive the markup, got {:?}",
+                facts
+                    .declarations
+                    .iter()
+                    .map(|item| item.name.as_str())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
     use super::extract;
     use crate::facts::DeclarationKind;
     use crate::syntax::Language;
@@ -507,7 +569,7 @@ mod tests {
         assert_eq!(specifiers(source), [("./yes".to_owned(), false, false)]);
         let facts = extract(source, Language::TypeScript);
         let routes = facts
-            .calls
+            .references
             .iter()
             .flat_map(|call| call.string_arguments.clone())
             .collect::<Vec<_>>();
@@ -551,7 +613,7 @@ mod tests {
             "got {declared:?}"
         );
         let call = facts
-            .calls
+            .references
             .iter()
             .find(|call| call.name == "helper")
             .expect("the call inside run is recorded");
