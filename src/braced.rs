@@ -340,6 +340,10 @@ impl Extractor<'_, '_> {
         // `pub mod x;` is still a module dependency, so modifiers are stepped
         // over here exactly as a declaration would step over them.
         let mut index = start;
+        // `pub use x::y;` forwards another module's surface to importers of
+        // this one, exactly as `export ... from` does in JavaScript, so an
+        // importer reaches through it transitively.
+        let forwarding = self.rules.exported_keyword == Some(self.text(start));
         while self.rules.modifiers.contains(&self.text(index)) {
             index += 1;
             // `pub(crate) use x;` carries a parenthesised visibility scope.
@@ -444,7 +448,7 @@ impl Extractor<'_, '_> {
             specifier,
             span: self.span(index, cursor.saturating_sub(1)),
             type_only: false,
-            reexport: false,
+            reexport: forwarding,
             names: Vec::new(),
         });
         Some(cursor)
