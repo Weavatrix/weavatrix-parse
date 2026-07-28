@@ -20,6 +20,7 @@ pub enum Language {
     C,
     Cpp,
     Sql,
+    Solidity,
     Bash,
     Yaml,
 }
@@ -39,6 +40,7 @@ impl Language {
             "c" | "h" => Self::C,
             "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => Self::Cpp,
             "sql" | "psql" => Self::Sql,
+            "sol" => Self::Solidity,
             "sh" | "bash" | "zsh" => Self::Bash,
             "yaml" | "yml" => Self::Yaml,
             _ => return None,
@@ -58,6 +60,7 @@ impl Language {
             Self::C => "c",
             Self::Cpp => "cpp",
             Self::Sql => "sql",
+            Self::Solidity => "solidity",
             Self::Bash => "bash",
             Self::Yaml => "yaml",
         }
@@ -110,7 +113,9 @@ impl Language {
                 significant_indentation: true,
                 identifier_extra: &['_'],
             },
-            Self::Go | Self::Java | Self::CSharp | Self::C | Self::Cpp => Syntax {
+            // Solidity is lexically a C-family language; only its keywords
+            // differ, and those live with the structural rules rather than here.
+            Self::Go | Self::Java | Self::CSharp | Self::C | Self::Cpp | Self::Solidity => Syntax {
                 line_comments: &["//"],
                 block_comment: Some(("/*", "*/")),
                 nested_block_comments: false,

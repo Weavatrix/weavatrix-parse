@@ -41,7 +41,8 @@ pub fn extract(source: &str, language: Language) -> Facts {
         | Language::Java
         | Language::CSharp
         | Language::C
-        | Language::Cpp => braced::extract(source, language),
+        | Language::Cpp
+        | Language::Solidity => braced::extract(source, language),
         _ => Facts::default(),
     }
 }

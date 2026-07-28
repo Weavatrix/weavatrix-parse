@@ -1,10 +1,11 @@
 //! Structural extraction for the brace-scoped languages.
 //!
-//! Rust, Go, Java, C#, C and C++ differ in which keyword introduces a
-//! declaration and how a module is named, and agree on everything else: braces
-//! open bodies, a name followed by a parameter list is callable, and a call is
-//! an identifier followed by `(`. Those differences are tables, so one walk
-//! serves all six instead of six near-identical scanners.
+//! Rust, Go, Java, C#, C, C++ and Solidity differ in which keyword introduces
+//! a declaration and how a module is named, and agree on everything else:
+//! braces open bodies, a name followed by a parameter list is callable, and a
+//! call is an identifier followed by `(`. Those differences are tables, so one
+//! walk serves all seven instead of seven near-identical scanners - and adding
+//! the next such language costs a table, not a scanner.
 
 use crate::facts::{Call, Declaration, DeclarationKind, Facts, Import, Span};
 use crate::syntax::Language;
@@ -97,6 +98,29 @@ impl Rules {
                     "readonly",
                 ],
                 braced_members: true,
+                exported_keyword: Some("public"),
+            },
+            Language::Solidity => Self {
+                declarations: &[
+                    ("contract", DeclarationKind::Class),
+                    ("library", DeclarationKind::Class),
+                    ("interface", DeclarationKind::Interface),
+                    ("struct", DeclarationKind::Struct),
+                    ("enum", DeclarationKind::Enum),
+                    ("function", DeclarationKind::Function),
+                    ("constructor", DeclarationKind::Method),
+                    ("modifier", DeclarationKind::Function),
+                    ("event", DeclarationKind::Field),
+                    ("error", DeclarationKind::Struct),
+                ],
+                imports: &["import"],
+                modifiers: &[
+                    "abstract", "virtual", "override", "public", "private", "internal", "external",
+                    "pure", "view", "payable",
+                ],
+                braced_members: false,
+                // Anything not marked internal or private is reachable from
+                // another contract, which is what export means here.
                 exported_keyword: Some("public"),
             },
             _ => Self {
@@ -200,6 +224,19 @@ impl Extractor<'_, '_> {
             self.depth -= 1;
             return index + 1;
         }
+        if self.punct(index, ";") {
+            // A declaration whose statement ended before any brace has no
+            // body, so it must not stay open and adopt what follows it -
+            // which is what a Solidity `event` did to the next function.
+            if self
+                .scopes
+                .last()
+                .is_some_and(|scope| scope.depth.is_none())
+            {
+                self.scopes.pop();
+            }
+            return index + 1;
+        }
         if self.kind(index) != Some(TokenKind::Identifier) {
             return index + 1;
         }
@@ -275,12 +312,28 @@ impl Extractor<'_, '_> {
         let limit = (index + 128).min(self.tokens.len());
         while cursor < limit {
             if self.kind(cursor) == Some(TokenKind::String) {
+                // A quoted path is the whole specifier, so anything read
+                // before it was a list of imported names, not a path.
+                specifier.clear();
                 specifier.push_str(self.text(cursor).trim_matches(['"', '`', '\'']));
                 cursor += 1;
                 break;
             }
-            if self.punct(cursor, ";") || self.punct(cursor, "{") {
+            if self.punct(cursor, ";") {
                 break;
+            }
+            if self.punct(cursor, "{") {
+                // A trailing group narrows a path already read, as in
+                // `use a::{b, c}`. A leading one lists names being imported
+                // from a path still to come, as in `import {A} from "./x"`.
+                if !specifier.is_empty() {
+                    break;
+                }
+                while cursor < limit && !self.punct(cursor, "}") {
+                    cursor += 1;
+                }
+                cursor += 1;
+                continue;
             }
             if self.tokens[cursor].line != line && specifier.is_empty() {
                 break;
@@ -611,6 +664,53 @@ mod tests {
         assert!(
             !items.iter().any(|(name, ..)| name == "forEach"),
             "a call chain inside a body is not a declaration, got {items:?}"
+        );
+    }
+
+    #[test]
+    fn solidity_contracts_own_their_functions_and_name_their_dependencies() {
+        let source = "// SPDX-License-Identifier: MIT\n\
+             pragma solidity ^0.8.20;\n\
+             import \"./Ownable.sol\";\n\
+             import {IERC20, SafeMath} from \"@openzeppelin/contracts/token/IERC20.sol\";\n\
+             \n\
+             contract Vault is Ownable {\n\
+             \x20 event Deposited(address indexed who, uint256 amount);\n\
+             \x20 function deposit(uint256 amount) public payable {\n\
+             \x20   token.transferFrom(msg.sender, address(this), amount);\n\
+             \x20 }\n\
+             \x20 function _sweep() internal {}\n\
+             }\n";
+        let facts = extract(source, Language::Solidity);
+        assert_eq!(
+            facts
+                .imports
+                .iter()
+                .map(|import| import.specifier.as_str())
+                .collect::<Vec<_>>(),
+            ["./Ownable.sol", "@openzeppelin/contracts/token/IERC20.sol"],
+            "the names listed before `from` are bindings, not the path"
+        );
+        let items = declared(source, Language::Solidity);
+        assert!(
+            items.iter().any(|(name, kind, owner)| name == "Vault"
+                && *kind == DeclarationKind::Class
+                && owner.is_none()),
+            "got {items:?}"
+        );
+        for method in ["deposit", "_sweep"] {
+            assert!(
+                items.iter().any(|(name, kind, owner)| name == method
+                    && *kind == DeclarationKind::Function
+                    && owner.as_deref() == Some("Vault")),
+                "{method} belongs to Vault, got {items:?}"
+            );
+        }
+        assert!(
+            facts.calls.iter().any(
+                |call| call.name == "transferFrom" && call.receiver.as_deref() == Some("token")
+            ),
+            "a call through a receiver keeps the receiver"
         );
     }
 
