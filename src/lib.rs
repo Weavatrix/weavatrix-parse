@@ -14,6 +14,7 @@
 //!
 //! No dependencies, no generated grammars, no C, `unsafe` forbidden.
 
+pub mod braced;
 pub mod facts;
 pub mod python;
 pub mod script;
