@@ -170,6 +170,7 @@ impl Extractor<'_, '_> {
             span: self.span(index, index),
             type_only: false,
             reexport: false,
+            names: Vec::new(),
         });
     }
 
@@ -293,6 +294,7 @@ impl Extractor<'_, '_> {
                         span,
                         type_only: false,
                         reexport: false,
+                        names: Vec::new(),
                     });
                 }
             }

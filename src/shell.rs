@@ -239,6 +239,7 @@ impl Extractor<'_, '_> {
                 span,
                 type_only: false,
                 reexport: false,
+                names: Vec::new(),
             });
             return after;
         }
@@ -252,6 +253,7 @@ impl Extractor<'_, '_> {
                 span,
                 type_only: false,
                 reexport: false,
+                names: Vec::new(),
             });
             return after;
         }
@@ -268,6 +270,7 @@ impl Extractor<'_, '_> {
             span,
             owner: self.function.as_ref().map(|(name, _)| name.clone()),
             string_arguments: addresses,
+            name_arguments: Vec::new(),
         });
         after
     }

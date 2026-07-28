@@ -116,6 +116,7 @@ impl Extractor {
                 span,
                 type_only: false,
                 reexport: false,
+                names: Vec::new(),
             });
         }
     }

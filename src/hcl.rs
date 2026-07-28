@@ -174,6 +174,7 @@ impl Extractor<'_, '_> {
             span: self.span(index, index + 2),
             type_only: false,
             reexport: false,
+            names: Vec::new(),
         });
         Some(index + 3)
     }
@@ -222,6 +223,7 @@ impl Extractor<'_, '_> {
             span: self.span(index, cursor.saturating_sub(1)),
             owner: self.block.last().cloned(),
             string_arguments: Vec::new(),
+            name_arguments: Vec::new(),
         });
         Some(cursor)
     }

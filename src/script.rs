@@ -129,6 +129,11 @@ impl Extractor<'_, '_> {
         {
             return next;
         }
+        if self.kind(index) == Some(TokenKind::String)
+            && let Some(next) = self.route_table(index)
+        {
+            return next;
+        }
         if self.kind(index) == Some(TokenKind::Identifier) {
             if let Some(next) = self.declaration(index) {
                 return next;
@@ -163,6 +168,7 @@ impl Extractor<'_, '_> {
                 span: self.span(index, cursor + 1),
                 type_only: false,
                 reexport: false,
+                names: Vec::new(),
             });
             return Some(cursor + 2);
         }
@@ -178,6 +184,7 @@ impl Extractor<'_, '_> {
                     span: self.span(index, scan),
                     type_only,
                     reexport: exporting,
+                    names: self.bound_names(cursor, scan),
                 });
                 return Some(scan + 1);
             }
@@ -200,6 +207,70 @@ impl Extractor<'_, '_> {
             scan += 1;
         }
         None
+    }
+
+    /// A route table written as an object: `{ '/items': { POST: handler } }`.
+    ///
+    /// The path is a key rather than an argument, so no call site mentions it
+    /// and the ordinary call path cannot see it - but it registers a route
+    /// exactly as `router.post('/items', handler)` does.
+    fn route_table(&mut self, index: usize) -> Option<usize> {
+        let path = self.string_at(index)?;
+        if !path.starts_with('/') || !self.punct(index + 1, ":") || !self.punct(index + 2, "{") {
+            return None;
+        }
+        let limit = (index + 128).min(self.tokens.len());
+        let mut cursor = index + 3;
+        let mut depth = 1_i32;
+        while cursor < limit && depth > 0 {
+            if self.punct(cursor, "{") {
+                depth += 1;
+            } else if self.punct(cursor, "}") {
+                depth -= 1;
+            } else if depth == 1
+                && self.kind(cursor) == Some(TokenKind::Identifier)
+                && self.punct(cursor + 1, ":")
+                && is_method(self.text(cursor))
+            {
+                self.facts.references.push(Reference {
+                    name: self.text(cursor).to_owned(),
+                    kind: ReferenceKind::Call,
+                    receiver: None,
+                    span: self.span(index, cursor),
+                    owner: self.owner(),
+                    string_arguments: vec![path.clone()],
+                    name_arguments: Vec::new(),
+                });
+            }
+            cursor += 1;
+        }
+        Some(cursor)
+    }
+
+    /// The local names an import clause binds.
+    ///
+    /// `as` renames, so only the name after it is bound, and the clause
+    /// keywords themselves bind nothing.
+    fn bound_names(&self, start: usize, end: usize) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut scan = start;
+        while scan < end {
+            if self.kind(scan) == Some(TokenKind::Identifier) {
+                let text = self.text(scan);
+                if !matches!(text, "from" | "type" | "default") {
+                    // `x as y` binds y, so a preceding `as` replaces what was
+                    // recorded for the name before it.
+                    if self.is(scan.wrapping_sub(1), "as") {
+                        names.pop();
+                    }
+                    if text != "as" {
+                        names.push(text.to_owned());
+                    }
+                }
+            }
+            scan += 1;
+        }
+        names
     }
 
     /// Whether a `export ...` statement reaches a `from` clause before its end.
@@ -426,6 +497,7 @@ impl Extractor<'_, '_> {
             && self.kind(index.wrapping_sub(2)) == Some(TokenKind::Identifier))
         .then(|| self.text(index - 2).to_owned());
         let mut arguments = Vec::new();
+        let mut names = Vec::new();
         let mut scan = index + 2;
         let mut depth = 1_i32;
         let limit = (index + 256).min(self.tokens.len());
@@ -439,6 +511,14 @@ impl Extractor<'_, '_> {
                 && let Some(value) = self.string_at(scan)
             {
                 arguments.push(value);
+            } else if depth == 1 && self.kind(scan) == Some(TokenKind::Identifier) {
+                // A bare name passed as an argument: the router in
+                // `app.use("/api", router)`, the handler in `app.get(path, h)`.
+                // A member access contributes only its root, because that is
+                // the binding an importer can resolve.
+                if !self.punct(scan.wrapping_sub(1), ".") {
+                    names.push(self.text(scan).to_owned());
+                }
             }
             scan += 1;
         }
@@ -448,11 +528,22 @@ impl Extractor<'_, '_> {
             && receiver.is_none()
             && let Some(specifier) = arguments.first()
         {
+            // `const router = require('./x')` binds the module to a name, and
+            // a mount written later refers to it by that name and nothing
+            // else.
+            let bound = if self.punct(index.wrapping_sub(1), "=")
+                && self.kind(index.wrapping_sub(2)) == Some(TokenKind::Identifier)
+            {
+                vec![self.text(index - 2).to_owned()]
+            } else {
+                Vec::new()
+            };
             self.facts.imports.push(Import {
                 specifier: specifier.clone(),
                 span: self.span(index, index),
                 type_only: false,
                 reexport: false,
+                names: bound,
             });
         }
         self.facts.references.push(Reference {
@@ -462,9 +553,18 @@ impl Extractor<'_, '_> {
             span: self.span(index, index),
             owner: self.owner(),
             string_arguments: arguments,
+            name_arguments: names,
         });
         Some(index + 1)
     }
+}
+
+/// Whether a name is an HTTP method written as a route-table key.
+fn is_method(name: &str) -> bool {
+    matches!(
+        name,
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS" | "ALL"
+    )
 }
 
 #[cfg(test)]

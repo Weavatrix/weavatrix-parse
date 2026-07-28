@@ -125,6 +125,7 @@ impl Extractor<'_, '_> {
                         span: self.span(index, cursor),
                         type_only: false,
                         reexport: keyword.eq_ignore_ascii_case("forward"),
+                        names: Vec::new(),
                     });
                     found = true;
                 }
@@ -221,6 +222,7 @@ pub(crate) fn selector_use(facts: &mut Facts, name: String, span: Span) {
         span,
         owner: None,
         string_arguments: Vec::new(),
+        name_arguments: Vec::new(),
     });
 }
 

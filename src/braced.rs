@@ -365,6 +365,7 @@ impl Extractor<'_, '_> {
                         span: self.span(cursor, cursor),
                         type_only: false,
                         reexport: false,
+                        names: Vec::new(),
                     });
                 }
                 cursor += 1;
@@ -383,6 +384,7 @@ impl Extractor<'_, '_> {
                 span: self.span(index, index + 1),
                 type_only: false,
                 reexport: false,
+                names: Vec::new(),
             });
             return Some(index + 2);
         }
@@ -443,6 +445,7 @@ impl Extractor<'_, '_> {
             span: self.span(index, cursor.saturating_sub(1)),
             type_only: false,
             reexport: false,
+            names: Vec::new(),
         });
         Some(cursor)
     }
@@ -484,6 +487,11 @@ impl Extractor<'_, '_> {
                 .typed_function(cursor, exported)
                 .or_else(|| self.braced_member(cursor, exported));
         };
+        // Go groups declarations: `const ( A = 1\n B = 2 )` declares both, and
+        // the keyword is followed by a parenthesis rather than by a name.
+        if self.punct(cursor + 1, "(") {
+            return self.grouped_declarations(index, cursor + 2, *kind);
+        }
         let name_index = cursor + 1;
         if self.kind(name_index) != Some(TokenKind::Identifier) {
             return None;
@@ -499,6 +507,7 @@ impl Extractor<'_, '_> {
             owner: self.owner(),
             exported,
         });
+        self.heritage(name_index + 1, &name);
         self.scopes.push(Scope {
             name,
             depth: None,
@@ -512,6 +521,114 @@ impl Extractor<'_, '_> {
             ),
         });
         Some(name_index + 1)
+    }
+
+    /// What a type declares itself to derive from or satisfy.
+    ///
+    /// `extends` and `implements` are different edges and the graph keeps them
+    /// apart; Go and Solidity write only one relation, so everything after
+    /// their marker inherits.
+    fn heritage(&mut self, start: usize, owner: &str) {
+        let limit = (start + 48).min(self.tokens.len());
+        let mut cursor = start;
+        let mut kind = None;
+        while cursor < limit && !self.punct(cursor, "{") && !self.punct(cursor, ";") {
+            match self.text(cursor) {
+                // Solidity writes `contract Vault is Ownable` for what Java
+                // writes as `extends`.
+                "extends" | "is" => kind = Some(ReferenceKind::Inherits),
+                "implements" => kind = Some(ReferenceKind::Implements),
+                _ => {
+                    if let Some(kind) = kind
+                        && self.kind(cursor) == Some(TokenKind::Identifier)
+                        && !self.punct(cursor.wrapping_sub(1), ".")
+                    {
+                        self.facts.references.push(Reference {
+                            name: self.text(cursor).to_owned(),
+                            kind,
+                            receiver: None,
+                            span: self.span(cursor, cursor),
+                            owner: Some(owner.to_owned()),
+                            string_arguments: Vec::new(),
+                            name_arguments: Vec::new(),
+                        });
+                    }
+                }
+            }
+            cursor += 1;
+        }
+    }
+
+    /// A field written inside a type body: `private String name = value;`.
+    ///
+    /// The name is the last one before the terminator, which is what makes a
+    /// generic type such as `Map<String, Order> index;` name `index` rather
+    /// than one of its type arguments.
+    fn braced_field(&mut self, index: usize, exported: bool) -> Option<usize> {
+        let limit = (index + 32).min(self.tokens.len());
+        let mut cursor = index;
+        let mut name = None;
+        while cursor < limit {
+            if self.punct(cursor, ";") || self.punct(cursor, "=") {
+                break;
+            }
+            // A parenthesis or a brace means this was never a field.
+            if self.punct(cursor, "(") || self.punct(cursor, "{") {
+                return None;
+            }
+            if self.kind(cursor) == Some(TokenKind::Identifier) {
+                name = Some((self.text(cursor).to_owned(), cursor));
+            }
+            cursor += 1;
+        }
+        let (name, at) = name?;
+        // A lone name is a reference, not a declaration: a field needs a type
+        // before it.
+        if at == index {
+            return None;
+        }
+        self.facts.declarations.push(Declaration {
+            name,
+            kind: DeclarationKind::Field,
+            span: self.span(index, at),
+            owner: self.owner(),
+            exported,
+        });
+        Some(cursor)
+    }
+
+    /// Every name declared inside a `const (...)` or `var (...)` group.
+    ///
+    /// Each line of the group declares one name, so the first identifier on a
+    /// line is the declaration and the rest is its value.
+    fn grouped_declarations(
+        &mut self,
+        start: usize,
+        open: usize,
+        kind: DeclarationKind,
+    ) -> Option<usize> {
+        let limit = (open + 1024).min(self.tokens.len());
+        let mut cursor = open;
+        let mut line = 0;
+        let mut found = false;
+        while cursor < limit && !self.punct(cursor, ")") {
+            if self.kind(cursor) == Some(TokenKind::Identifier) && self.tokens[cursor].line != line
+            {
+                line = self.tokens[cursor].line;
+                let name = self.text(cursor).to_owned();
+                let exported = name.starts_with(char::is_uppercase);
+                self.facts.declarations.push(Declaration {
+                    name,
+                    kind,
+                    span: self.span(cursor, cursor),
+                    owner: self.owner(),
+                    exported,
+                });
+                found = true;
+            }
+            cursor += 1;
+        }
+        found.then_some(cursor + 1).or(Some(start + 1))
     }
 
     /// `impl Type`, `impl Trait for Type` and `extension Type` name what their
@@ -689,16 +806,32 @@ impl Extractor<'_, '_> {
         if !inside_type {
             return None;
         }
+        // An annotation is not a member. `@GetMapping("/stock")` and
+        // `[HttpGet("/health")]` configure the member written beneath them,
+        // and reading them as declarations both invents a method and loses
+        // the route they carry.
+        if self.punct(index.wrapping_sub(1), "@") || self.punct(index.wrapping_sub(1), "[") {
+            return None;
+        }
         // `Type name(` declares a method; the name is the token before `(`.
+        // Reaching a terminator first means there is no parameter list, so
+        // this is a field rather than a method - and the loop must leave the
+        // decision to the field path instead of giving up here.
         let mut cursor = index;
         let limit = (index + 16).min(self.tokens.len());
         while cursor < limit && !self.punct(cursor + 1, "(") {
             if self.punct(cursor, ";") || self.punct(cursor, "{") || self.punct(cursor, "=") {
-                return None;
+                return self.braced_field(index, exported);
             }
             cursor += 1;
         }
-        if cursor >= limit || self.kind(cursor) != Some(TokenKind::Identifier) {
+        // `private String name;` declares a field: a type, a name, and no
+        // parameter list. The line scanner recorded these, so losing them
+        // would be a regression rather than a simplification.
+        if cursor >= limit || !self.punct(cursor + 1, "(") {
+            return self.braced_field(index, exported);
+        }
+        if self.kind(cursor) != Some(TokenKind::Identifier) {
             return None;
         }
         let name = self.text(cursor).to_owned();
@@ -748,6 +881,7 @@ impl Extractor<'_, '_> {
                 span: self.span(index, index),
                 owner: self.owner(),
                 string_arguments: Vec::new(),
+                name_arguments: Vec::new(),
             });
         }
         let mut arguments = Vec::new();
@@ -771,6 +905,7 @@ impl Extractor<'_, '_> {
             span: self.span(index, index),
             owner: self.owner(),
             string_arguments: arguments,
+            name_arguments: Vec::new(),
         });
         Some(index + 1)
     }

@@ -147,6 +147,29 @@ impl Extractor<'_, '_> {
             // Python exports by convention: a leading underscore is private.
             exported: !name.starts_with('_'),
         });
+        // `class Service(Base, Mixin):` names what it derives from, and those
+        // are the edges an architecture rule reasons about.
+        if kind == DeclarationKind::Class && self.punct(name_index + 1, "(") {
+            let limit = (name_index + 64).min(self.tokens.len());
+            let mut cursor = name_index + 2;
+            while cursor < limit && !self.punct(cursor, ")") {
+                if self.kind(cursor) == Some(TokenKind::Identifier)
+                    && !self.punct(cursor + 1, "=")
+                    && !self.punct(cursor.wrapping_sub(1), ".")
+                {
+                    self.facts.references.push(Reference {
+                        name: self.text(cursor).to_owned(),
+                        kind: ReferenceKind::Inherits,
+                        receiver: None,
+                        span: self.span(cursor, cursor),
+                        owner: Some(name.clone()),
+                        string_arguments: Vec::new(),
+                        name_arguments: Vec::new(),
+                    });
+                }
+                cursor += 1;
+            }
+        }
         self.scopes.push(Scope { name, column });
         name_index + 1
     }
@@ -214,6 +237,7 @@ impl Extractor<'_, '_> {
             span: self.span(start, end),
             type_only: false,
             reexport: false,
+            names: Vec::new(),
         });
     }
 
@@ -257,6 +281,7 @@ impl Extractor<'_, '_> {
             span: self.span(index, index),
             owner: self.owner(),
             string_arguments: arguments,
+            name_arguments: Vec::new(),
         });
         Some(index + 1)
     }

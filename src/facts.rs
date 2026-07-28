@@ -65,6 +65,12 @@ pub struct Import {
     pub type_only: bool,
     /// `export ... from`, which forwards another module's surface.
     pub reexport: bool,
+    /// Local names this import binds.
+    ///
+    /// Without them a consumer meeting `router` in `app.use("/api", router)`
+    /// cannot tell which module it came from, and the mount resolves to
+    /// nothing.
+    pub names: Vec<String>,
 }
 
 /// Why one name mentions another.
@@ -81,6 +87,10 @@ pub enum ReferenceKind {
     /// A name used without being called, as an HTML `class` attribute uses a
     /// CSS selector.
     Uses,
+    /// A statement that reads the named object, as `SELECT ... FROM users`.
+    Reads,
+    /// A statement that writes it, as `INSERT INTO users`.
+    Writes,
 }
 
 /// One name mentioning another.
@@ -96,6 +106,12 @@ pub struct Reference {
     pub owner: Option<String>,
     /// Literal string arguments, which carry routes, topics and table names.
     pub string_arguments: Vec<String>,
+    /// Names passed as arguments, in the order written.
+    ///
+    /// `app.use("/api", router)` mounts one module under a prefix, and the
+    /// prefix is a string while the module is a name - so a consumer that
+    /// only sees literals sees half the fact and can resolve neither end.
+    pub name_arguments: Vec<String>,
 }
 
 /// Everything one structural pass found in one file.

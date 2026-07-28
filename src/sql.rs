@@ -203,6 +203,7 @@ impl Extractor<'_, '_> {
                 span: self.span(index, after.saturating_sub(1)),
                 type_only: false,
                 reexport: false,
+                names: Vec::new(),
             });
             return Some(after);
         }
@@ -230,13 +231,31 @@ impl Extractor<'_, '_> {
         if self.word(index, "on") && !self.creating_index(index) {
             return None;
         }
+        // Whether the statement reads the object or writes it is the whole
+        // point of the edge: a report that reads a table and a job that
+        // rewrites it are not the same dependency.
+        let writing = self.word(index, "into") || self.word(index, "update");
         let mut recorded = 0_usize;
         while let Some((name, after)) = self.qualified_name(cursor) {
+            self.facts.references.push(Reference {
+                name: name.clone(),
+                kind: if writing {
+                    ReferenceKind::Writes
+                } else {
+                    ReferenceKind::Reads
+                },
+                receiver: None,
+                span: self.span(cursor, after.saturating_sub(1)),
+                owner: self.object.clone(),
+                string_arguments: Vec::new(),
+                name_arguments: Vec::new(),
+            });
             self.facts.imports.push(Import {
                 specifier: name,
                 span: self.span(cursor, after.saturating_sub(1)),
                 type_only: false,
                 reexport: false,
+                names: Vec::new(),
             });
             recorded += 1;
             cursor = after;
@@ -317,6 +336,7 @@ impl Extractor<'_, '_> {
             span: self.span(index, index),
             owner: self.object.clone(),
             string_arguments: arguments,
+            name_arguments: Vec::new(),
         });
         Some(index + 1)
     }
