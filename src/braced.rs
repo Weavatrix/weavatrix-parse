@@ -631,17 +631,22 @@ impl Extractor<'_, '_> {
         Some(index + 1)
     }
 
-    /// The type names inside `<...>` at `index`, and how many tokens they
-    /// occupy, or nothing when this is a comparison rather than a type list.
+    /// How many tokens the `<...>` group at `index` occupies, or zero when
+    /// this is a comparison rather than a type list.
     ///
     /// A closing angle bracket is what tells the two apart: `a < b` never
     /// reaches one before the statement ends.
-    fn type_arguments(&self, index: usize) -> (Vec<String>, usize) {
+    ///
+    /// This deliberately allocates nothing. Rust writes `Vec<String>` and
+    /// `Option<T>` everywhere, so this runs on almost every identifier in a
+    /// file and almost always ends in a type rather than a call - collecting
+    /// the names here cost a heap allocation per type argument that was then
+    /// thrown away, and a third of the extraction throughput with it.
+    fn type_argument_span(&self, index: usize) -> usize {
         if !self.punct(index, "<") {
-            return (Vec::new(), 0);
+            return 0;
         }
         let limit = (index + 32).min(self.tokens.len());
-        let mut names = Vec::new();
         let mut cursor = index + 1;
         let mut depth = 1_i32;
         while cursor < limit && depth > 0 {
@@ -651,16 +656,19 @@ impl Extractor<'_, '_> {
                 depth -= 1;
             } else if self.punct(cursor, ";") || self.punct(cursor, "{") {
                 // A statement ended, so the angle bracket was an operator.
-                return (Vec::new(), 0);
-            } else if self.kind(cursor) == Some(TokenKind::Identifier) {
-                names.push(self.text(cursor).to_owned());
+                return 0;
             }
             cursor += 1;
         }
-        if depth > 0 {
-            return (Vec::new(), 0);
-        }
-        (names, cursor - index)
+        if depth > 0 { 0 } else { cursor - index }
+    }
+
+    /// The type names inside a group already known to be one.
+    fn type_argument_names(&self, index: usize, length: usize) -> Vec<String> {
+        (index..index + length)
+            .filter(|cursor| self.kind(*cursor) == Some(TokenKind::Identifier))
+            .map(|cursor| self.text(cursor).to_owned())
+            .collect()
     }
 
     /// Whether the declaration ending at `index` was marked `static`.
@@ -716,8 +724,8 @@ impl Extractor<'_, '_> {
         // `modelBuilder.Entity<Order>()` is a call whose parenthesis does not
         // follow the name. The type argument is what an object-relational
         // mapper names the entity with, so it is worth reaching.
-        let type_arguments = self.type_arguments(index + 1);
-        let open = index + 1 + type_arguments.1;
+        let type_arguments = self.type_argument_span(index + 1);
+        let open = index + 1 + type_arguments;
         if !self.punct(open, "(") {
             return None;
         }
@@ -732,7 +740,7 @@ impl Extractor<'_, '_> {
             && (self.punct(index - 1, ".") || self.punct(index - 1, ":"))
             && self.kind(index - 2) == Some(TokenKind::Identifier))
         .then(|| self.text(index - 2).to_owned());
-        for argument in type_arguments.0 {
+        for argument in self.type_argument_names(index + 1, type_arguments) {
             self.facts.references.push(Reference {
                 name: argument,
                 kind: ReferenceKind::Uses,

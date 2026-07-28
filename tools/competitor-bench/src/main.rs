@@ -47,6 +47,13 @@ fn main() {
         // SQL has no first-party tree-sitter grammar; this is the maintained
         // community one, which is what a consumer would actually reach for.
         (Language::Sql, || tree_sitter_sequel::LANGUAGE.into()),
+        (Language::Swift, || tree_sitter_swift::LANGUAGE.into()),
+        (Language::Bash, || tree_sitter_bash::LANGUAGE.into()),
+        (Language::Terraform, || tree_sitter_hcl::LANGUAGE.into()),
+        (Language::Markdown, || {
+            tree_sitter_md::LANGUAGE.into()
+        }),
+        (Language::Xml, || tree_sitter_xml::LANGUAGE_XML.into()),
     ];
 
     if auditing {
