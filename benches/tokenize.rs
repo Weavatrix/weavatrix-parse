@@ -25,7 +25,8 @@ fn main() {
                 black_box(count);
             };
             let median = median_ms(measure);
-            let megabytes = source.len() as f64 / (1024.0 * 1024.0);
+            let megabytes =
+                f64::from(u32::try_from(source.len()).unwrap_or(u32::MAX)) / (1024.0 * 1024.0);
             println!(
                 "language={} mode={mode:?} bytes={} median_ms={median:.3} mb_per_s={:.1}",
                 language.as_str(),
