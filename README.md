@@ -105,14 +105,33 @@ tree-sitter parsing plus one traversal, which is the cheapest way a consumer can
 actually reach the same facts. Full method and caveats in
 [docs/comparison.md](docs/comparison.md).
 
-| language | files | extract | ts parse + walk | ratio |
-|---|---|---|---|---|
-| javascript | 1047 | 41.9 MB/s | 4.5 MB/s | 9.3× |
-| typescript | 592 | 67.4 | 7.6 | 8.8× |
-| python | 1064 | 105.8 | 10.0 | 10.6× |
-| rust | 1128 | 40.9 | 3.9 | 10.4× |
-| go | 879 | 43.2 | 4.2 | 10.4× |
-| java | 399 | 51.9 | 6.8 | 7.7× |
+| language | files | MB | tokenize | extract | ts parse + walk | ratio |
+|---|---|---|---|---|---|---|
+| javascript | 1047 | 8.1 | 92.8 MB/s | 40.7 MB/s | 4.4 MB/s | 9.3× |
+| typescript | 592 | 8.1 | 84.8 | 57.9 | 5.7 | 10.2× |
+| python | 1064 | 8.1 | 143.5 | 108.8 | 7.9 | 13.9× |
+| rust | 1138 | 7.6 | 54.4 | 26.5 | 3.0 | 8.8× |
+| go | 879 | 4.2 | 105.3 | 58.5 | 5.3 | 11.1× |
+| java | 399 | 2.4 | 112.2 | 56.4 | 6.9 | 8.2× |
+| xml | 90 | 5.4 | 135.4 | 54.7 | 3.7 | 14.8× |
+| markdown | 1628 | 8.4 | 97.9 | 379.5 | 2.5 | 149.6× |
+| bash | 268 | 0.4 | 121.9 | 35.6 | 3.9 | 9.1× |
+| terraform | 79 | 0.2 | 64.8 | 40.7 | 1.3 | 31.2× |
+| sql | 20 | 0.1 | 75.0 | 50.2 | 2.1 | 23.7× |
+| c# | 7 | 0.1 | 132.5 | 62.4 | 3.3 | 18.8× |
+| swift | 1 | 0.0 | 119.4 | 42.9 | 1.6 | 27.5× |
+
+Read the small corpora — Swift, C#, SQL, Terraform — as "no measurement" rather
+than as a result. Absolute throughput moves with whatever else the machine is
+doing; the ratio does not, because both sides are timed in the same interleaved
+rounds. A run is only used if it is internally consistent: `ts walk` must never
+beat the `ts parse` it contains, and `extract` must never beat the `tokenize` it
+contains. Runs that failed that test have been discarded rather than published.
+
+Markdown is the one exception to the second rule, and it is not a result to be
+proud of: prose has no token structure, so the document extractor reads lines
+directly and never tokenizes at all. It is fast because it does far less than
+tree-sitter does, not because it does the same thing faster.
 
 Speed is worth nothing if the facts are wrong, so the same corpus is compared on
 what each side finds. Imports are the fact to compare on, because every grammar
