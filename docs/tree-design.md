@@ -25,9 +25,24 @@ WebAssembly analyzer works.
 
 The incrementality-first design scored well and was still not chosen, because
 its defining move — dropping absolute offsets and parent pointers so a splice
-rewrites nothing — costs exactly those two properties. It optimises for an
-editor consumer nobody has asked for. That is a trade to make when someone
-asks; not before.
+rewrites nothing — costs exactly those two properties.
+
+Incremental reparse is nevertheless a requirement, not a hypothetical: an
+editor and a language server are stated consumers. What the choice costs is
+stated plainly rather than hidden. With absolute offsets, an edit shifts the
+offsets of every node after it, so a splice is O(nodes after the edit) instead
+of O(edit). For a file that is a `memmove` over a few thousand 20-byte records
+and a bounded add over their offsets — cheap in absolute terms, and paid per
+keystroke rather than per scan. The alternative would have made every
+translator lookup and every analyzer side table more expensive, permanently, to
+make that one operation asymptotically better. Two grafts were taken
+specifically to keep the cost down: a relative parent index, so a node and its
+parent that shift together need no fixup at all, and `LexState` with
+`Tokenizer::resume()`, so relexing restarts at the edit rather than at the file
+start.
+
+`reparse` returns a report of what it reused, so the claim is measurable in a
+benchmark and falsifiable in a test rather than asserted here.
 
 ## Shape
 

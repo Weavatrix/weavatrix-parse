@@ -44,9 +44,17 @@ struct Rules {
     typed_functions: bool,
     /// Whether a declaration is public by keyword rather than by convention.
     exported_keyword: Option<&'static str>,
+    /// Keywords that open a named scope without declaring anything: Rust's
+    /// `impl Type` and Swift's `extension Type` say what the members belong
+    /// to, and declare no new name.
+    scope_keywords: &'static [&'static str],
 }
 
 impl Rules {
+    // One arm per language, each a table of keywords. Splitting it to satisfy
+    // a line count would scatter the tables and make the languages harder to
+    // compare against each other, which is the point of writing them as data.
+    #[allow(clippy::too_many_lines)]
     const fn of(language: Language) -> Self {
         match language {
             Language::Rust => Self {
@@ -65,6 +73,52 @@ impl Rules {
                 braced_members: false,
                 typed_functions: false,
                 exported_keyword: Some("pub"),
+                scope_keywords: &["impl"],
+            },
+            Language::Swift => Self {
+                declarations: &[
+                    ("func", DeclarationKind::Function),
+                    ("class", DeclarationKind::Class),
+                    ("struct", DeclarationKind::Struct),
+                    ("actor", DeclarationKind::Class),
+                    ("enum", DeclarationKind::Enum),
+                    ("protocol", DeclarationKind::Interface),
+                    ("typealias", DeclarationKind::TypeAlias),
+                    ("associatedtype", DeclarationKind::TypeAlias),
+                    ("let", DeclarationKind::Constant),
+                    ("var", DeclarationKind::Variable),
+                    ("init", DeclarationKind::Method),
+                    ("subscript", DeclarationKind::Method),
+                ],
+                imports: &["import"],
+                modifiers: &[
+                    "public",
+                    "private",
+                    "internal",
+                    "fileprivate",
+                    "open",
+                    "static",
+                    "final",
+                    "override",
+                    "mutating",
+                    "nonmutating",
+                    "lazy",
+                    "weak",
+                    "unowned",
+                    "required",
+                    "convenience",
+                    "indirect",
+                    "dynamic",
+                    "optional",
+                    "async",
+                    "throws",
+                ],
+                braced_members: false,
+                typed_functions: false,
+                // `open` is wider than `public`, but both leave the module,
+                // and `exported` records only whether it leaves.
+                exported_keyword: Some("public"),
+                scope_keywords: &["extension"],
             },
             Language::Go => Self {
                 declarations: &[
@@ -78,6 +132,7 @@ impl Rules {
                 braced_members: false,
                 typed_functions: false,
                 exported_keyword: None,
+                scope_keywords: &[],
             },
             Language::Java | Language::CSharp => Self {
                 declarations: &[
@@ -105,6 +160,7 @@ impl Rules {
                 braced_members: true,
                 typed_functions: false,
                 exported_keyword: Some("public"),
+                scope_keywords: &[],
             },
             Language::Solidity => Self {
                 declarations: &[
@@ -129,6 +185,7 @@ impl Rules {
                 // Anything not marked internal or private is reachable from
                 // another contract, which is what export means here.
                 exported_keyword: Some("public"),
+                scope_keywords: &[],
             },
             _ => Self {
                 declarations: &[
@@ -142,6 +199,7 @@ impl Rules {
                 braced_members: true,
                 typed_functions: true,
                 exported_keyword: None,
+                scope_keywords: &[],
             },
         }
     }
@@ -208,6 +266,22 @@ impl Extractor<'_, '_> {
             .scopes
             .last()
             .is_some_and(|scope| scope.depth.is_some_and(|depth| self.depth < depth))
+        {
+            self.scopes.pop();
+        }
+    }
+
+    /// Discards a scope still waiting for a body when a second declaration
+    /// arrives, because only one can be waiting at a time.
+    ///
+    /// A semicolon already does this for languages that write one. Swift and
+    /// Go end a statement at the newline, so without this a `let name: String`
+    /// stayed open and adopted every function declared after it.
+    fn drop_waiting(&mut self) {
+        if self
+            .scopes
+            .last()
+            .is_some_and(|scope| scope.depth.is_none())
         {
             self.scopes.pop();
         }
@@ -394,6 +468,11 @@ impl Extractor<'_, '_> {
             }
             break;
         }
+        if self.rules.scope_keywords.contains(&self.text(cursor))
+            && let Some(next) = self.open_named_scope(cursor)
+        {
+            return Some(next);
+        }
         let keyword = self.text(cursor);
         let Some((_, kind)) = self
             .rules
@@ -412,6 +491,7 @@ impl Extractor<'_, '_> {
         let name = self.text(name_index).to_owned();
         // Go marks export by an initial capital rather than a keyword.
         let exported = exported || name.starts_with(char::is_uppercase);
+        self.drop_waiting();
         self.facts.declarations.push(Declaration {
             name: name.clone(),
             kind: *kind,
@@ -432,6 +512,43 @@ impl Extractor<'_, '_> {
             ),
         });
         Some(name_index + 1)
+    }
+
+    /// `impl Type`, `impl Trait for Type` and `extension Type` name what their
+    /// members belong to without declaring anything themselves.
+    ///
+    /// The name is the last one before the brace, which is what makes
+    /// `impl Display for Engine` belong to `Engine` rather than to `Display`.
+    fn open_named_scope(&mut self, keyword: usize) -> Option<usize> {
+        self.drop_waiting();
+        let limit = (keyword + 64).min(self.tokens.len());
+        let mut cursor = keyword + 1;
+        let mut name = None;
+        let mut generic = 0_i32;
+        while cursor < limit && !self.punct(cursor, "{") {
+            if self.punct(cursor, ";") {
+                return None;
+            }
+            // A generic argument is part of the type, not a name of its own.
+            if self.punct(cursor, "<") {
+                generic += 1;
+            } else if self.punct(cursor, ">") {
+                generic -= 1;
+            } else if generic == 0 && self.kind(cursor) == Some(TokenKind::Identifier) {
+                name = Some(self.text(cursor).to_owned());
+            }
+            cursor += 1;
+        }
+        let name = name?;
+        if !self.punct(cursor, "{") {
+            return None;
+        }
+        self.scopes.push(Scope {
+            name,
+            depth: None,
+            type_body: true,
+        });
+        Some(cursor)
     }
 
     /// A C or C++ function, which no keyword introduces: what marks it is a
@@ -814,6 +931,75 @@ mod tests {
             ),
             "a call through a receiver keeps the receiver"
         );
+    }
+
+    #[test]
+    fn swift_members_belong_to_the_type_their_extension_names() {
+        let source = "import Foundation\n\
+             import UIKit\n\
+             \n\
+             public struct Engine {\n\
+             \x20 let name: String\n\
+             \x20 public func start() { boot() }\n\
+             }\n\
+             \n\
+             extension Engine {\n\
+             \x20 func restart() { start() }\n\
+             }\n\
+             \n\
+             private func boot() {}\n";
+        let facts = extract(source, Language::Swift);
+        assert_eq!(
+            facts
+                .imports
+                .iter()
+                .map(|import| import.specifier.as_str())
+                .collect::<Vec<_>>(),
+            ["Foundation", "UIKit"]
+        );
+        let items = declared(source, Language::Swift);
+        assert!(
+            items.iter().any(|(name, kind, owner)| name == "start"
+                && *kind == DeclarationKind::Function
+                && owner.as_deref() == Some("Engine")),
+            "got {items:?}"
+        );
+        assert!(
+            items
+                .iter()
+                .any(|(name, _, owner)| name == "restart" && owner.as_deref() == Some("Engine")),
+            "an extension names what its members belong to, got {items:?}"
+        );
+        assert!(
+            !items.iter().any(|(name, ..)| name == "extension"),
+            "and declares nothing itself, got {items:?}"
+        );
+        assert!(
+            items
+                .iter()
+                .any(|(name, _, owner)| name == "boot" && owner.is_none()),
+            "the file-level function is back outside, got {items:?}"
+        );
+    }
+
+    #[test]
+    fn a_rust_impl_gives_its_methods_an_owner() {
+        let source = "struct Engine;\n\
+             impl Engine {\n\
+             \x20   pub fn start(&self) {}\n\
+             }\n\
+             impl Display for Engine {\n\
+             \x20   fn fmt(&self) {}\n\
+             }\n";
+        let items = declared(source, Language::Rust);
+        for method in ["start", "fmt"] {
+            assert!(
+                items
+                    .iter()
+                    .any(|(name, _, owner)| name == method && owner.as_deref() == Some("Engine")),
+                "{method} belongs to Engine, not to the trait, got {items:?}"
+            );
+        }
     }
 
     #[test]

@@ -15,7 +15,9 @@
 //! No dependencies, no generated grammars, no C, `unsafe` forbidden.
 
 pub mod braced;
+pub mod docs;
 pub mod facts;
+pub mod hcl;
 pub mod markup;
 pub mod python;
 pub mod script;
@@ -38,7 +40,11 @@ pub fn extract(source: &str, language: Language) -> Facts {
         Language::JavaScript | Language::TypeScript => script::extract(source, language),
         Language::Python => python::extract(source),
         Language::Sql => sql::extract(source),
-        Language::Html => markup::extract(source),
+        Language::Terraform => hcl::extract(source),
+        Language::Markdown | Language::Mdx | Language::ReStructuredText | Language::AsciiDoc => {
+            docs::extract(source, language)
+        }
+        Language::Html | Language::Xml => markup::extract(source, language),
         Language::Css | Language::Scss => style::extract(source, language),
         Language::Rust
         | Language::Go
@@ -46,7 +52,8 @@ pub fn extract(source: &str, language: Language) -> Facts {
         | Language::CSharp
         | Language::C
         | Language::Cpp
-        | Language::Solidity => braced::extract(source, language),
+        | Language::Solidity
+        | Language::Swift => braced::extract(source, language),
         _ => Facts::default(),
     }
 }

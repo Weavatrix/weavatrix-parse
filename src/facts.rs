@@ -37,6 +37,10 @@ pub enum DeclarationKind {
     Procedure,
     /// A CSS class or id selector, named with its leading `.` or `#`.
     Selector,
+    /// An infrastructure object: a Terraform resource, data source or output.
+    Resource,
+    /// A section heading in a document.
+    Heading,
 }
 
 /// A named declaration and where it was written.

@@ -45,20 +45,38 @@ significant indentation, whether a slash opens a regular expression or divides,
 and whether a quote opens a character literal or a lifetime.
 
 Structural extraction — declarations, imports and references with spans —
-covers JavaScript, TypeScript, Python, Rust, Go, Java, C#, C, C++, SQL,
-Solidity, HTML and CSS/SCSS/Less. Bash and YAML are tokenized but have no
-structural model yet.
+covers eighteen languages and formats:
+
+| | |
+|---|---|
+| Curly-brace languages | JavaScript, TypeScript, Rust, Go, Java, C#, C, C++, Swift, Solidity |
+| Own scoping model | Python, SQL |
+| Web | HTML, CSS/SCSS/Less, Vue and Svelte components |
+| Configuration and markup | Terraform/HCL, XML |
+| Documents | Markdown, MDX, reStructuredText, AsciiDoc |
+
+Bash and YAML are tokenized but have no structural model yet.
 
 React is not a separate language here but is the case where the lexer's
 assumptions are most fragile, so it is pinned by test: inside JSX a `/` must
 stay a division rather than opening a regular expression that would swallow
 the rest of the file, and `<` must not be read as a comparison.
 
-HTML and CSS earn their place by producing an edge neither can produce alone.
-A stylesheet declares selectors; a document's `class` and `id` attributes use
-them; the two resolve to each other. Nesting is read from tokens rather than
-flat rules, so `.card { &__title { } }` declares `.card__title` — a name that
-appears nowhere in the source as written.
+Several of these earn their place by producing an edge no other extractor can.
+A stylesheet declares selectors and a document's `class` and `id` attributes
+use them, so the two resolve to each other — and nesting is read from tokens
+rather than flat rules, so `.card { &__title { } }` declares `.card__title`, a
+name that appears nowhere in the source as written. Terraform ties
+infrastructure into the same graph: a `module` names another directory, and
+every `var.x`, `module.m.out` and `aws_s3_bucket.b.id` is a reference between
+declared objects. Documents contribute their heading tree and every link that
+points at a path in the repository rather than at the web.
+
+Vue and Svelte components are read through their script and style blocks,
+because a component keeps its imports there and nowhere else. Claiming the
+extension while reading only the template would make the file a graph node
+with no dependencies — which reads as "this component imports nothing" rather
+than as "unsupported", and that is worse than not claiming it.
 
 The brace-scoped languages share one walk driven by keyword tables, so adding
 one of them costs a table rather than a scanner: Solidity was added for two
@@ -75,12 +93,12 @@ actually reach the same facts. Full method and caveats in
 
 | language | files | extract | ts parse + walk | ratio |
 |---|---|---|---|---|
-| javascript | 1047 | 40.3 MB/s | 4.0 MB/s | 10.1× |
-| typescript | 592 | 41.9 | 4.4 | 9.6× |
-| python | 1066 | 131.5 | 8.7 | 15.1× |
-| rust | 1117 | 22.3 | 2.1 | 10.8× |
-| go | 880 | 45.7 | 4.2 | 11.0× |
-| java | 399 | 24.7 | 3.3 | 7.6× |
+| javascript | 1047 | 41.9 MB/s | 4.5 MB/s | 9.3× |
+| typescript | 592 | 67.4 | 7.6 | 8.8× |
+| python | 1064 | 105.8 | 10.0 | 10.6× |
+| rust | 1128 | 40.9 | 3.9 | 10.4× |
+| go | 879 | 43.2 | 4.2 | 10.4× |
+| java | 399 | 51.9 | 6.8 | 7.7× |
 
 Speed is worth nothing if the facts are wrong, so the same corpus is compared on
 what each side finds. Imports are the fact to compare on, because every grammar
@@ -88,23 +106,36 @@ marks them with a dedicated node type.
 
 | language | tree-sitter | ours | missed | agreement |
 |---|---|---|---|---|
-| javascript | 1471 | 3832 | 2 | 99.9% |
-| typescript | 2373 | 2627 | 7 | 99.7% |
+| javascript | 1471 | 3832 | 0 | 100.0% |
+| typescript | 2373 | 2634 | 0 | 100.0% |
 | python | 5814 | 5822 | 0 | 100.0% |
-| rust | 5654 | 5657 | 0 | 100.0% |
-| go | 5080 | 5080 | 0 | 100.0% |
+| rust | 5688 | 5691 | 0 | 100.0% |
+| go | 5075 | 5075 | 0 | 100.0% |
 | java | 4586 | 4586 | 0 | 100.0% |
+| c# | 28 | 28 | 0 | 100.0% |
 
 Where our count exceeds tree-sitter's, the surplus was read rather than assumed:
 in JavaScript it is `require()`, which `import_statement` cannot see, and in
 TypeScript it is `typeof import("...")` in type positions. Both are real
 dependencies.
 
-The comparison earns its keep by finding defects, not by producing a table. It
-is what surfaced a character literal holding a quote — `['.', '"', '+']` —
-leaving the tokenizer treating that double quote as opening a string that ran on
-for hundreds of lines and swallowed every declaration after it. Rust agreement
-went from 97.2% to 100% once that and `pub(crate) use` were fixed.
+The comparison earns its keep by finding defects, not by producing a table.
+Every one of these was found by running it and read in the source before being
+fixed:
+
+A character literal holding a quote — `['.', '"', '+']` — left the tokenizer
+treating that double quote as opening a string, which ran on for hundreds of
+lines and swallowed every declaration after it. `pub(crate) use x;` was
+invisible because the import path stepped over modifiers but not over a
+parenthesised visibility scope. `#include <stdio.h>` scanned past the end of
+its line and consumed the function beneath it. `int add(int a, int b) { }`
+matched no declaration rule and fell through to the call path, so every C
+function definition was recorded as a call to itself. And
+`import service, { helper } from './x'` was dropped by a guard that broke at
+any brace which was not the second token — the one shape a default name before
+the brace produces.
+
+Rust went 97.2% → 100%, JavaScript and TypeScript 99.9% and 99.7% → 100%.
 
 Reproduce with `tools/competitor-bench`, a workspace kept outside the published
 crate so tree-sitter's C grammars never reach it:

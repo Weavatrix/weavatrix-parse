@@ -17,25 +17,45 @@ use crate::token::{Mode, Token, TokenKind, Tokenizer};
 
 /// Extracts structural facts from one document.
 #[must_use]
-pub fn extract(source: &str) -> Facts {
-    let tokens = Tokenizer::new(source, Language::Html)
+pub fn extract(source: &str, language: Language) -> Facts {
+    let tokens = Tokenizer::new(source, language)
         .mode(Mode::Lite)
         .collect::<Vec<_>>();
     let mut state = Extractor {
         source,
         tokens: &tokens,
+        language,
         facts: Facts::default(),
         tag: String::new(),
+        text_start: None,
     };
     state.run();
     state.facts
+}
+
+/// Elements whose text is a dependency rather than prose.
+///
+/// XML project files name their dependencies in element content rather than in
+/// attributes: a Maven module lists `<module>ui</module>`, and an artifact is
+/// split across `<groupId>` and `<artifactId>`.
+fn names_a_file_in_text(tag: &str) -> bool {
+    matches!(tag, "module" | "include" | "xi:include" | "systemid")
 }
 
 /// Which attribute names a file, given the tag it is written on.
 ///
 /// `href` on an anchor is a link to a page rather than a dependency of this
 /// one, so the tag decides, not the attribute alone.
-fn names_a_file(tag: &str, attribute: &str) -> bool {
+fn names_a_file(language: Language, tag: &str, attribute: &str) -> bool {
+    if language == Language::Xml {
+        // A project file points at another project or package by attribute:
+        // `<ProjectReference Include="../Lib/Lib.csproj">`, `<xi:include
+        // href="shared.xml">`, `<xsd:import schemaLocation="types.xsd">`.
+        return matches!(
+            attribute,
+            "include" | "href" | "src" | "schemalocation" | "location" | "file" | "path"
+        );
+    }
     match attribute {
         "href" => matches!(tag, "link" | "use"),
         "src" => matches!(
@@ -50,9 +70,12 @@ fn names_a_file(tag: &str, attribute: &str) -> bool {
 struct Extractor<'source, 'tokens> {
     source: &'source str,
     tokens: &'tokens [Token],
+    language: Language,
     facts: Facts,
     /// The tag whose attributes are being read.
     tag: String,
+    /// Where the text of an element whose content names a file begins.
+    text_start: Option<(usize, String)>,
 }
 
 impl Extractor<'_, '_> {
@@ -95,6 +118,8 @@ impl Extractor<'_, '_> {
         // `<tag` opens an element and names the tag the following attributes
         // belong to; `</` and `>` end one.
         if self.punct(index, "<") {
+            // An element whose content names a file ends its text here.
+            self.close_text(index);
             if self.kind(index + 1) == Some(TokenKind::Identifier) {
                 self.tag = self.text(index + 1).to_ascii_lowercase();
                 return index + 2;
@@ -111,6 +136,10 @@ impl Extractor<'_, '_> {
                 self.tag.clear();
                 return self.embedded(index, &embedded);
             }
+            if self.language == Language::Xml && names_a_file_in_text(&self.tag) {
+                let tag = self.tag.clone();
+                self.text_start = self.tokens.get(index + 1).map(|token| (token.start, tag));
+            }
             self.tag.clear();
             return index + 1;
         }
@@ -118,6 +147,30 @@ impl Extractor<'_, '_> {
             return index + 1;
         }
         self.attribute(index)
+    }
+
+    /// Records the text of an element whose content is a path.
+    fn close_text(&mut self, index: usize) {
+        let Some((start, _)) = self.text_start.take() else {
+            return;
+        };
+        let Some(end) = self.tokens.get(index).map(|token| token.start) else {
+            return;
+        };
+        if end <= start {
+            return;
+        }
+        let text = self.source[start..end].trim();
+        // A path has no spaces in it; prose does.
+        if text.is_empty() || text.contains(char::is_whitespace) {
+            return;
+        }
+        self.facts.imports.push(Import {
+            specifier: text.to_owned(),
+            span: self.span(index, index),
+            type_only: false,
+            reexport: false,
+        });
     }
 
     /// Extracts the body of a `<script>` or `<style>` element with the
@@ -227,7 +280,7 @@ impl Extractor<'_, '_> {
                 }
             }
             "id" => selector_use(&mut self.facts, format!("#{value}"), span),
-            _ if names_a_file(&self.tag, &name) => {
+            _ if names_a_file(self.language, &self.tag, &name) => {
                 // A srcset lists several candidates with descriptors.
                 for candidate in value.split(',') {
                     let path = candidate.split_whitespace().next().unwrap_or("");
@@ -253,9 +306,10 @@ impl Extractor<'_, '_> {
 mod tests {
     use super::extract;
     use crate::facts::ReferenceKind;
+    use crate::syntax::Language;
 
     fn imports(source: &str) -> Vec<String> {
-        extract(source)
+        extract(source, Language::Html)
             .imports
             .into_iter()
             .map(|import| import.specifier)
@@ -263,7 +317,7 @@ mod tests {
     }
 
     fn uses(source: &str) -> Vec<String> {
-        extract(source)
+        extract(source, Language::Html)
             .references
             .into_iter()
             .filter(|reference| reference.kind == ReferenceKind::Uses)
@@ -320,7 +374,7 @@ mod tests {
              <style scoped>\n\
              .card { color: red; }\n\
              </style>\n";
-        let facts = extract(source);
+        let facts = extract(source, Language::Html);
         assert_eq!(
             facts
                 .imports
@@ -348,6 +402,46 @@ mod tests {
                 .iter()
                 .any(|reference| reference.name == ".card"),
             "and the template uses it"
+        );
+    }
+
+    #[test]
+    fn a_project_file_names_the_projects_and_packages_it_references() {
+        let source = "<Project Sdk=\"Microsoft.NET.Sdk\">\n\
+             \x20 <ItemGroup>\n\
+             \x20   <ProjectReference Include=\"../Core/Core.csproj\" />\n\
+             \x20   <PackageReference Include=\"Serilog\" Version=\"3.1.0\" />\n\
+             \x20 </ItemGroup>\n\
+             \x20 <Import Project=\"build/common.props\" />\n\
+             </Project>\n";
+        assert_eq!(
+            extract(source, Language::Xml)
+                .imports
+                .into_iter()
+                .map(|import| import.specifier)
+                .collect::<Vec<_>>(),
+            ["../Core/Core.csproj", "Serilog"],
+            "an Include names a dependency whether it is a path or a package"
+        );
+    }
+
+    #[test]
+    fn a_maven_module_is_named_by_its_element_text() {
+        let source = "<project>\n\
+             \x20 <modules>\n\
+             \x20   <module>ui</module>\n\
+             \x20   <module>service</module>\n\
+             \x20 </modules>\n\
+             \x20 <name>My Project Name</name>\n\
+             </project>\n";
+        assert_eq!(
+            extract(source, Language::Xml)
+                .imports
+                .into_iter()
+                .map(|import| import.specifier)
+                .collect::<Vec<_>>(),
+            ["ui", "service"],
+            "prose with spaces in it is not a path"
         );
     }
 

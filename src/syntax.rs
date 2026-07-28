@@ -21,7 +21,15 @@ pub enum Language {
     Cpp,
     Sql,
     Solidity,
+    Swift,
+    Terraform,
     Html,
+    Xml,
+    Markdown,
+    /// Markdown with JavaScript imports and components.
+    Mdx,
+    ReStructuredText,
+    AsciiDoc,
     Css,
     /// SCSS, Sass and Less, which differ from CSS by allowing `//` comments
     /// and nesting selectors.
@@ -46,7 +54,15 @@ impl Language {
             "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => Self::Cpp,
             "sql" | "psql" => Self::Sql,
             "sol" => Self::Solidity,
+            "swift" => Self::Swift,
+            "tf" | "tfvars" | "hcl" => Self::Terraform,
             "html" | "htm" | "xhtml" | "vue" | "svelte" => Self::Html,
+            "xml" | "xsd" | "xsl" | "xslt" | "pom" | "csproj" | "vbproj" | "fsproj" | "props"
+            | "targets" | "plist" | "storyboard" | "xib" | "resx" | "nuspec" => Self::Xml,
+            "md" | "markdown" | "mdown" | "mkd" | "mkdn" => Self::Markdown,
+            "mdx" => Self::Mdx,
+            "rst" => Self::ReStructuredText,
+            "adoc" | "asciidoc" | "asc" => Self::AsciiDoc,
             "css" => Self::Css,
             "scss" | "sass" | "less" => Self::Scss,
             "sh" | "bash" | "zsh" => Self::Bash,
@@ -69,6 +85,13 @@ impl Language {
             Self::Cpp => "cpp",
             Self::Sql => "sql",
             Self::Solidity => "solidity",
+            Self::Swift => "swift",
+            Self::Terraform => "terraform",
+            Self::Xml => "xml",
+            Self::Markdown => "markdown",
+            Self::Mdx => "mdx",
+            Self::ReStructuredText => "rst",
+            Self::AsciiDoc => "asciidoc",
             Self::Html => "html",
             Self::Css => "css",
             Self::Scss => "scss",
@@ -161,6 +184,36 @@ impl Language {
                 significant_indentation: false,
                 identifier_extra: &['_', '$'],
             },
+            Self::Swift => Syntax {
+                line_comments: &["//"],
+                block_comment: Some(("/*", "*/")),
+                // Swift block comments nest, as Rust's do.
+                nested_block_comments: true,
+                quotes: &['"'],
+                interpolated_quote: None,
+                escapes: true,
+                raw_strings: false,
+                regex_literals: false,
+                triple_quotes: true,
+                char_literals: false,
+                significant_indentation: false,
+                // `$0` names a closure argument, and `_` a wildcard.
+                identifier_extra: &['_', '$'],
+            },
+            Self::Terraform => Syntax {
+                line_comments: &["#", "//"],
+                block_comment: Some(("/*", "*/")),
+                nested_block_comments: false,
+                quotes: &['"'],
+                interpolated_quote: Some('"'),
+                escapes: true,
+                regex_literals: false,
+                raw_strings: false,
+                triple_quotes: false,
+                char_literals: false,
+                significant_indentation: false,
+                identifier_extra: &['_', '-'],
+            },
             // A tag is punctuation and identifiers around a quoted value, so
             // the ordinary token model fits once `-` and `:` are allowed in a
             // name: `data-count`, `aria-label`, `xlink:href`, `v-on:click`.
@@ -209,6 +262,40 @@ impl Language {
                 char_literals: false,
                 significant_indentation: false,
                 identifier_extra: &['_', '-', '$', '@'],
+            },
+            // XML shares HTML's shape; what differs is which attributes name a
+            // file, and that belongs with the extractor rather than here.
+            Self::Xml => Syntax {
+                line_comments: &[],
+                block_comment: Some(("<!--", "-->")),
+                nested_block_comments: false,
+                quotes: &['"', '\''],
+                interpolated_quote: None,
+                escapes: false,
+                regex_literals: false,
+                raw_strings: false,
+                triple_quotes: false,
+                char_literals: false,
+                significant_indentation: false,
+                identifier_extra: &['_', '-', ':', '.'],
+            },
+            // Prose has no token structure worth the name: a `"` is a quotation
+            // mark, not a literal, and `//` is part of a URL. These rules exist
+            // so the tokenizer stays total over every language; the document
+            // extractors read lines directly, which is the honest model.
+            Self::Markdown | Self::Mdx | Self::ReStructuredText | Self::AsciiDoc => Syntax {
+                line_comments: &[],
+                block_comment: Some(("<!--", "-->")),
+                nested_block_comments: false,
+                quotes: &[],
+                interpolated_quote: None,
+                escapes: false,
+                regex_literals: false,
+                raw_strings: false,
+                triple_quotes: false,
+                char_literals: false,
+                significant_indentation: true,
+                identifier_extra: &['_', '-', '.'],
             },
             Self::Bash => Syntax {
                 line_comments: &["#"],
