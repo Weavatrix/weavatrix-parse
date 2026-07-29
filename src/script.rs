@@ -9,9 +9,12 @@
 //! identifier followed by `(`, not by building an expression tree, because no
 //! consumer of these facts asks about precedence.
 
-use crate::facts::{Declaration, DeclarationKind, Facts, Import, Reference, ReferenceKind, Span};
+use crate::facts::{
+    Declaration, DeclarationKind, Facts, Import, ImportBinding, Reference, ReferenceKind, Span,
+};
 use crate::syntax::Language;
 use crate::token::{Mode, Token, TokenKind, Tokenizer};
+use std::collections::BTreeMap;
 
 /// Extracts structural facts from one JavaScript or TypeScript source.
 #[must_use]
@@ -22,9 +25,13 @@ pub fn extract(source: &str, language: Language) -> Facts {
     Extractor {
         source,
         tokens: &tokens,
+        language,
         facts: Facts::default(),
         scopes: Vec::new(),
+        import_bindings: BTreeMap::new(),
         depth: 0,
+        paren_depth: 0,
+        bracket_depth: 0,
     }
     .run()
 }
@@ -36,16 +43,25 @@ struct Scope {
     /// `{` is seen, so until then the scope is waiting and must not be closed
     /// by the very brace that opens it.
     depth: Option<i32>,
-    /// Whether members declared directly inside are class members.
-    class_body: bool,
+    /// Whether members declared directly inside are class or object members.
+    member_body: bool,
+    /// Classes declare fields; object literals only contribute named methods.
+    fields: bool,
+    /// Parenthesis/bracket nesting at the member body's opening brace.
+    paren_depth: i32,
+    bracket_depth: i32,
 }
 
 struct Extractor<'source, 'tokens> {
     source: &'source str,
     tokens: &'tokens [Token],
+    language: Language,
     facts: Facts,
     scopes: Vec<Scope>,
+    import_bindings: BTreeMap<String, (String, bool, String)>,
     depth: i32,
+    paren_depth: i32,
+    bracket_depth: i32,
 }
 
 impl Extractor<'_, '_> {
@@ -108,20 +124,55 @@ impl Extractor<'_, '_> {
         let depth = self.depth;
         if let Some(scope) = self.scopes.last_mut()
             && scope.depth.is_none()
+            && scope.paren_depth == self.paren_depth
+            && scope.bracket_depth == self.bracket_depth
         {
             scope.depth = Some(depth);
+            scope.paren_depth = self.paren_depth;
+            scope.bracket_depth = self.bracket_depth;
         }
     }
 
     /// Consumes one construct starting at `index`, returning the next index.
     fn step(&mut self, index: usize) -> usize {
         if self.punct(index, "{") {
+            let object_owner = self.object_literal_owner(index);
+            let waiting_scope = self
+                .scopes
+                .last()
+                .is_some_and(|scope| scope.depth.is_none());
             self.depth += 1;
             self.open_body();
+            if !waiting_scope && let Some(name) = object_owner {
+                self.scopes.push(Scope {
+                    name,
+                    depth: Some(self.depth),
+                    member_body: true,
+                    fields: false,
+                    paren_depth: self.paren_depth,
+                    bracket_depth: self.bracket_depth,
+                });
+            }
             return index + 1;
         }
         if self.punct(index, "}") {
             self.depth -= 1;
+            return index + 1;
+        }
+        if self.punct(index, "(") {
+            self.paren_depth += 1;
+            return index + 1;
+        }
+        if self.punct(index, ")") {
+            self.paren_depth -= 1;
+            return index + 1;
+        }
+        if self.punct(index, "[") {
+            self.bracket_depth += 1;
+            return index + 1;
+        }
+        if self.punct(index, "]") {
+            self.bracket_depth -= 1;
             return index + 1;
         }
         if (self.is(index, "import") || self.is(index, "export"))
@@ -129,10 +180,11 @@ impl Extractor<'_, '_> {
         {
             return next;
         }
-        if self.kind(index) == Some(TokenKind::String)
-            && let Some(next) = self.route_table(index)
-        {
-            return next;
+        if self.kind(index) == Some(TokenKind::String) {
+            self.template_references(index);
+            if let Some(next) = self.route_table(index) {
+                return next;
+            }
         }
         if self.kind(index) == Some(TokenKind::Identifier) {
             if let Some(next) = self.declaration(index) {
@@ -143,6 +195,43 @@ impl Extractor<'_, '_> {
             }
         }
         index + 1
+    }
+
+    /// Calls inside `${...}` are program expressions even though the lossless
+    /// tokenizer deliberately keeps the complete template as one string
+    /// token. Extract each balanced expression separately and relocate its
+    /// references to the original file. Literal template text is never parsed
+    /// as code.
+    fn template_references(&mut self, index: usize) {
+        let token = &self.tokens[index];
+        let template = token.text(self.source);
+        if !template.starts_with('`') {
+            return;
+        }
+        let owner = self.owner();
+        for (start, end) in template_interpolation_ranges(template, self.language) {
+            let Some(expression) = template.get(start..end) else {
+                continue;
+            };
+            let base = token.start + start;
+            let (base_line, base_column) = position_at(self.source, base);
+            let mut references = extract(expression, self.language).references;
+            for reference in &mut references {
+                reference.span.start += base;
+                reference.span.end += base;
+                reference.span.line = base_line.saturating_add(reference.span.line - 1);
+                if reference.span.line == base_line {
+                    reference.span.column = base_column.saturating_add(reference.span.column - 1);
+                }
+                reference.span.end_line = base_line.saturating_add(reference.span.end_line - 1);
+                if reference.span.end_line == base_line {
+                    reference.span.end_column =
+                        base_column.saturating_add(reference.span.end_column - 1);
+                }
+                reference.owner.clone_from(&owner);
+            }
+            self.facts.references.extend(references);
+        }
     }
 
     /// `import ... from 'x'`, `import 'x'`, `import('x')`, `require('x')`,
@@ -158,7 +247,7 @@ impl Extractor<'_, '_> {
         // `export function|class|const ...` is a declaration, not a module
         // statement; let the declaration path handle it.
         if exporting && !self.leads_to_from(cursor) {
-            return None;
+            return self.local_reexport(index, cursor);
         }
         if !exporting && self.punct(cursor, "(") {
             // Dynamic import: `import('x')`.
@@ -169,6 +258,7 @@ impl Extractor<'_, '_> {
                 type_only: false,
                 reexport: false,
                 names: Vec::new(),
+                bindings: Vec::new(),
             });
             return Some(cursor + 2);
         }
@@ -179,12 +269,26 @@ impl Extractor<'_, '_> {
                 let specifier = self.string_at(scan)?;
                 // `{ type X }` marks a single specifier as type-only too.
                 type_only = type_only || self.braced_types_only(cursor, scan);
+                let bindings = self.clause_bindings(cursor, scan);
+                let names = bindings
+                    .iter()
+                    .map(|binding| binding.local.clone())
+                    .collect::<Vec<_>>();
+                if !exporting {
+                    for binding in &bindings {
+                        self.import_bindings.insert(
+                            binding.local.clone(),
+                            (specifier.clone(), type_only, binding.imported.clone()),
+                        );
+                    }
+                }
                 self.facts.imports.push(Import {
                     specifier,
                     span: self.span(index, scan),
                     type_only,
                     reexport: exporting,
-                    names: self.bound_names(cursor, scan),
+                    names,
+                    bindings,
                 });
                 return Some(scan + 1);
             }
@@ -207,6 +311,59 @@ impl Extractor<'_, '_> {
             scan += 1;
         }
         None
+    }
+
+    /// `export { importedName }` forwards the module that originally bound the
+    /// local name even though this statement has no `from` clause of its own.
+    fn local_reexport(&mut self, start: usize, open: usize) -> Option<usize> {
+        if !self.punct(open, "{") {
+            return None;
+        }
+        let limit = (open + 512).min(self.tokens.len());
+        let mut cursor = open + 1;
+        let mut by_target = BTreeMap::<(String, bool), Vec<ImportBinding>>::new();
+        while cursor < limit && !self.punct(cursor, "}") {
+            if self.kind(cursor) == Some(TokenKind::Identifier)
+                && !matches!(self.text(cursor), "as" | "type")
+                && !self.is(cursor.wrapping_sub(1), "as")
+                && let Some((target, type_only, imported)) =
+                    self.import_bindings.get(self.text(cursor))
+            {
+                let local = if self.is(cursor + 1, "as")
+                    && self.kind(cursor + 2) == Some(TokenKind::Identifier)
+                {
+                    self.text(cursor + 2).to_owned()
+                } else {
+                    self.text(cursor).to_owned()
+                };
+                by_target
+                    .entry((target.clone(), *type_only))
+                    .or_default()
+                    .push(ImportBinding {
+                        imported: imported.clone(),
+                        local,
+                    });
+            }
+            cursor += 1;
+        }
+        if !self.punct(cursor, "}") {
+            return None;
+        }
+        for ((specifier, type_only), bindings) in by_target {
+            let names = bindings
+                .iter()
+                .map(|binding| binding.local.clone())
+                .collect();
+            self.facts.imports.push(Import {
+                specifier,
+                span: self.span(start, cursor),
+                type_only,
+                reexport: true,
+                names,
+                bindings,
+            });
+        }
+        Some(cursor + 1)
     }
 
     /// A route table written as an object: `{ '/items': { POST: handler } }`.
@@ -247,30 +404,64 @@ impl Extractor<'_, '_> {
         Some(cursor)
     }
 
-    /// The local names an import clause binds.
-    ///
-    /// `as` renames, so only the name after it is bound, and the clause
-    /// keywords themselves bind nothing.
-    fn bound_names(&self, start: usize, end: usize) -> Vec<String> {
-        let mut names = Vec::new();
+    /// The exported and local names an import clause binds.
+    fn clause_bindings(&self, start: usize, end: usize) -> Vec<ImportBinding> {
+        let mut bindings = Vec::new();
         let mut scan = start;
+        let mut braced = false;
+        let mut default_seen = false;
         while scan < end {
+            if self.punct(scan, "{") {
+                braced = true;
+                scan += 1;
+                continue;
+            }
+            if self.punct(scan, "}") {
+                braced = false;
+                scan += 1;
+                continue;
+            }
+            if self.punct(scan, "*")
+                && self.is(scan + 1, "as")
+                && self.kind(scan + 2) == Some(TokenKind::Identifier)
+            {
+                bindings.push(ImportBinding {
+                    imported: "*".to_owned(),
+                    local: self.text(scan + 2).to_owned(),
+                });
+                scan += 3;
+                continue;
+            }
             if self.kind(scan) == Some(TokenKind::Identifier) {
                 let text = self.text(scan);
-                if !matches!(text, "from" | "type" | "default") {
-                    // `x as y` binds y, so a preceding `as` replaces what was
-                    // recorded for the name before it.
-                    if self.is(scan.wrapping_sub(1), "as") {
-                        names.pop();
-                    }
-                    if text != "as" {
-                        names.push(text.to_owned());
-                    }
+                if matches!(text, "from" | "type" | "as") || self.is(scan.wrapping_sub(1), "as") {
+                    scan += 1;
+                    continue;
+                }
+                if self.is(scan + 1, "as") && self.kind(scan + 2) == Some(TokenKind::Identifier) {
+                    bindings.push(ImportBinding {
+                        imported: text.to_owned(),
+                        local: self.text(scan + 2).to_owned(),
+                    });
+                    scan += 3;
+                    continue;
+                }
+                if braced {
+                    bindings.push(ImportBinding {
+                        imported: text.to_owned(),
+                        local: text.to_owned(),
+                    });
+                } else if !default_seen {
+                    bindings.push(ImportBinding {
+                        imported: "default".to_owned(),
+                        local: text.to_owned(),
+                    });
+                    default_seen = true;
                 }
             }
             scan += 1;
         }
-        names
+        bindings
     }
 
     /// Whether a `export ...` statement reaches a `from` clause before its end.
@@ -389,13 +580,19 @@ impl Extractor<'_, '_> {
             self.scopes.push(Scope {
                 name,
                 depth: None,
-                class_body: true,
+                member_body: true,
+                fields: true,
+                paren_depth: self.paren_depth,
+                bracket_depth: self.bracket_depth,
             });
         } else if matches!(kind, DeclarationKind::Function) {
             self.scopes.push(Scope {
                 name,
                 depth: None,
-                class_body: false,
+                member_body: false,
+                fields: false,
+                paren_depth: self.paren_depth,
+                bracket_depth: self.bracket_depth,
             });
         }
         Some(name_index + 1)
@@ -406,12 +603,35 @@ impl Extractor<'_, '_> {
     fn is_arrow_function(&self, name_index: usize) -> bool {
         let limit = (name_index + 64).min(self.tokens.len());
         let mut scan = name_index + 1;
+        let mut nesting = 0_i32;
+        let mut assignment = false;
+        let mut value_started = false;
+        let declaration_line = self.tokens[name_index].line;
         while scan < limit {
-            if self.punct(scan, "=") && self.punct(scan + 1, ">") {
+            if nesting == 0 && self.punct(scan, "=") && self.punct(scan + 1, ">") {
                 return true;
             }
-            if self.punct(scan, ";") || self.punct(scan, "{") {
+            if nesting == 0
+                && self.tokens[scan].line > declaration_line
+                && assignment
+                && value_started
+            {
                 return false;
+            }
+            if nesting == 0 && self.punct(scan, "=") {
+                assignment = true;
+                scan += 1;
+                continue;
+            }
+            if self.punct(scan, "(") || self.punct(scan, "[") {
+                nesting += 1;
+            } else if self.punct(scan, ")") || self.punct(scan, "]") {
+                nesting -= 1;
+            } else if self.punct(scan, ";") || self.punct(scan, "{") {
+                return false;
+            }
+            if assignment {
+                value_started = true;
             }
             scan += 1;
         }
@@ -421,9 +641,32 @@ impl Extractor<'_, '_> {
     /// A method or field written directly inside a class body.
     fn class_member(&mut self, index: usize, exported: bool) -> Option<usize> {
         let inside_class = self.scopes.last().is_some_and(|scope| {
-            scope.class_body && scope.depth.is_some_and(|depth| self.depth == depth)
+            scope.member_body
+                && scope.depth.is_some_and(|depth| self.depth == depth)
+                && scope.paren_depth == self.paren_depth
+                && scope.bracket_depth == self.bracket_depth
         });
         if !inside_class || self.kind(index) != Some(TokenKind::Identifier) {
+            return None;
+        }
+        let previous = self.text(index.wrapping_sub(1));
+        let starts_member = matches!(
+            previous,
+            "{" | "}"
+                | ","
+                | ";"
+                | "public"
+                | "private"
+                | "protected"
+                | "static"
+                | "async"
+                | "get"
+                | "set"
+                | "readonly"
+                | "abstract"
+                | "declare"
+        );
+        if !starts_member {
             return None;
         }
         let name = self.text(index).to_owned();
@@ -435,6 +678,9 @@ impl Extractor<'_, '_> {
         let kind = if self.punct(index + 1, "(") || self.punct(index + 1, "<") {
             DeclarationKind::Method
         } else if self.punct(index + 1, ":") || self.punct(index + 1, "=") {
+            if !self.scopes.last().is_some_and(|scope| scope.fields) {
+                return None;
+            }
             DeclarationKind::Field
         } else {
             return None;
@@ -450,13 +696,55 @@ impl Extractor<'_, '_> {
             self.scopes.push(Scope {
                 name,
                 depth: None,
-                class_body: false,
+                member_body: false,
+                fields: false,
+                paren_depth: self.paren_depth,
+                bracket_depth: self.bracket_depth,
             });
             return Some(index + 1);
         }
         // A field initializer is still written at class-body depth, so
         // stepping through it would read `new Map()` as another member.
         Some(self.skip_initializer(index + 1))
+    }
+
+    fn object_literal_owner(&self, open: usize) -> Option<String> {
+        if self.is(open.wrapping_sub(1), "return") {
+            return self.owner();
+        }
+        if self.punct(open.wrapping_sub(1), "=")
+            && self.kind(open.wrapping_sub(2)) == Some(TokenKind::Identifier)
+        {
+            return Some(self.text(open - 2).to_owned());
+        }
+        if self.punct(open.wrapping_sub(1), ":")
+            && self.kind(open.wrapping_sub(2)) == Some(TokenKind::Identifier)
+        {
+            return Some(self.text(open - 2).to_owned());
+        }
+        // Object wrappers are commonly returned through `Object.freeze({...})`
+        // or another constructor-like call. Walk only the current expression;
+        // a preceding `return` keeps the methods owned by the enclosing
+        // factory, while an assignment gives the object its binding name.
+        if self.punct(open.wrapping_sub(1), "(") {
+            let boundary = open.saturating_sub(24);
+            let mut scan = open - 1;
+            while scan > boundary {
+                scan -= 1;
+                if self.is(scan, "return") {
+                    return self.owner();
+                }
+                if self.punct(scan, "=")
+                    && self.kind(scan.wrapping_sub(1)) == Some(TokenKind::Identifier)
+                {
+                    return Some(self.text(scan - 1).to_owned());
+                }
+                if self.punct(scan, ";") || self.punct(scan, "{") || self.punct(scan, "}") {
+                    break;
+                }
+            }
+        }
+        None
     }
 
     /// Advances past a field initializer, stopping at the statement end that
@@ -483,7 +771,9 @@ impl Extractor<'_, '_> {
 
     /// A call site, with the receiver it was written on.
     fn call(&mut self, index: usize) -> Option<usize> {
-        if !self.punct(index + 1, "(") {
+        let type_arguments = self.type_argument_span(index + 1);
+        let open = index + 1 + type_arguments;
+        if !self.punct(open, "(") {
             return None;
         }
         let name = self.text(index).to_owned();
@@ -498,20 +788,26 @@ impl Extractor<'_, '_> {
         .then(|| self.text(index - 2).to_owned());
         let mut arguments = Vec::new();
         let mut names = Vec::new();
-        let mut scan = index + 2;
+        let mut scan = open + 1;
         let mut depth = 1_i32;
+        let mut nested = 0_i32;
         let limit = (index + 256).min(self.tokens.len());
         while scan < limit && depth > 0 {
             if self.punct(scan, "(") {
                 depth += 1;
             } else if self.punct(scan, ")") {
                 depth -= 1;
+            } else if self.punct(scan, "{") || self.punct(scan, "[") {
+                nested += 1;
+            } else if self.punct(scan, "}") || self.punct(scan, "]") {
+                nested -= 1;
             } else if depth == 1
+                && nested == 0
                 && self.kind(scan) == Some(TokenKind::String)
                 && let Some(value) = self.string_at(scan)
             {
                 arguments.push(value);
-            } else if depth == 1 && self.kind(scan) == Some(TokenKind::Identifier) {
+            } else if depth == 1 && nested == 0 && self.kind(scan) == Some(TokenKind::Identifier) {
                 // A bare name passed as an argument: the router in
                 // `app.use("/api", router)`, the handler in `app.get(path, h)`.
                 // A member access contributes only its root, because that is
@@ -543,6 +839,13 @@ impl Extractor<'_, '_> {
                 span: self.span(index, index),
                 type_only: false,
                 reexport: false,
+                bindings: bound
+                    .iter()
+                    .map(|local| ImportBinding {
+                        imported: "*".to_owned(),
+                        local: local.clone(),
+                    })
+                    .collect(),
                 names: bound,
             });
         }
@@ -557,6 +860,31 @@ impl Extractor<'_, '_> {
         });
         Some(index + 1)
     }
+
+    /// Length of a balanced TypeScript type-argument list before a call.
+    fn type_argument_span(&self, index: usize) -> usize {
+        if !self.punct(index, "<") {
+            return 0;
+        }
+        let limit = (index + 64).min(self.tokens.len());
+        let mut cursor = index + 1;
+        let mut depth = 1_i32;
+        while cursor < limit && depth > 0 {
+            if self.punct(cursor, "<") {
+                depth += 1;
+            } else if self.punct(cursor, ">") {
+                depth -= 1;
+            } else if depth == 1 && matches!(self.text(cursor), ";" | "{" | "}") {
+                return 0;
+            }
+            cursor += 1;
+        }
+        if depth == 0 && self.punct(cursor, "(") {
+            cursor - index
+        } else {
+            0
+        }
+    }
 }
 
 /// Whether a name is an HTTP method written as a route-table key.
@@ -565,6 +893,74 @@ fn is_method(name: &str) -> bool {
         name,
         "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS" | "ALL"
     )
+}
+
+/// Byte ranges of the expressions enclosed by `${...}` in one JavaScript
+/// template token. A nested template is one token while matching the outer
+/// expression, so braces in its text cannot close the expression early.
+fn template_interpolation_ranges(template: &str, language: Language) -> Vec<(usize, usize)> {
+    let bytes = template.as_bytes();
+    let mut ranges = Vec::new();
+    let mut cursor = usize::from(bytes.first() == Some(&b'`'));
+    while cursor + 1 < bytes.len() {
+        if bytes[cursor] == b'\\' {
+            cursor = (cursor + 2).min(bytes.len());
+            continue;
+        }
+        if bytes[cursor] == b'`' {
+            break;
+        }
+        if bytes[cursor] != b'$' || bytes[cursor + 1] != b'{' {
+            cursor += 1;
+            continue;
+        }
+        let expression_start = cursor + 2;
+        let tail = &template[expression_start..];
+        let tokens = Tokenizer::new(tail, language)
+            .mode(Mode::Lite)
+            .collect::<Vec<_>>();
+        let mut depth = 1_i32;
+        let mut expression_end = None;
+        for token in tokens {
+            if token.kind != TokenKind::Punctuation {
+                continue;
+            }
+            match token.text(tail) {
+                "{" => depth += 1,
+                "}" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        expression_end = Some(expression_start + token.start);
+                        cursor = expression_start + token.end;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(expression_end) = expression_end else {
+            break;
+        };
+        ranges.push((expression_start, expression_end));
+    }
+    ranges
+}
+
+fn position_at(source: &str, offset: usize) -> (u32, u32) {
+    let prefix = source.get(..offset).unwrap_or(source);
+    let line = u32::try_from(prefix.bytes().filter(|byte| *byte == b'\n').count())
+        .unwrap_or(u32::MAX)
+        .saturating_add(1);
+    let column = u32::try_from(
+        prefix
+            .rsplit_once('\n')
+            .map_or(prefix, |(_, suffix)| suffix)
+            .chars()
+            .count(),
+    )
+    .unwrap_or(u32::MAX)
+    .saturating_add(1);
+    (line, column)
 }
 
 #[cfg(test)]
@@ -662,7 +1058,7 @@ mod tests {
     }
 
     use super::extract;
-    use crate::facts::DeclarationKind;
+    use crate::facts::{DeclarationKind, ImportBinding, ReferenceKind};
     use crate::syntax::Language;
 
     fn specifiers(source: &str) -> Vec<(String, bool, bool)> {
@@ -767,7 +1163,9 @@ mod tests {
 
     #[test]
     fn arrow_constants_are_functions_and_plain_constants_are_not() {
-        let source = "export const load = async () => { return 1; };\nconst limit = 10;\n";
+        let source = "export const load = async () => { return 1; };\n\
+             const multiline =\n(value) => value;\n\
+             const limit = 10;\n";
         let facts = extract(source, Language::TypeScript);
         let kinds = facts
             .declarations
@@ -779,8 +1177,370 @@ mod tests {
             "got {kinds:?}"
         );
         assert!(
+            kinds.contains(&("multiline", DeclarationKind::Function, false)),
+            "got {kinds:?}"
+        );
+        assert!(
             kinds.contains(&("limit", DeclarationKind::Constant, false)),
             "got {kinds:?}"
         );
+    }
+
+    #[test]
+    fn regexes_and_collection_initializers_are_not_arrow_functions() {
+        let source = "const SAFE_SCRIPT = /^(?:test(?::|$)|[^:]+:(?:test|check)(?::|$))/i\n\
+             const UNSAFE_SHELL_ARG = /[\\0\\r\\n&|<>^%!`\\\"]/ \n\
+             const byId = new Map((graph.nodes || []).map((node) => [String(node.id), node]))\n\
+             const files = new Set((graph.nodes || []).filter((node) => node.id))\n\
+             const adjacency = new Map([...files].map((file) => [file, new Set()]))\n";
+        let facts = extract(source, Language::JavaScript);
+        for name in [
+            "SAFE_SCRIPT",
+            "UNSAFE_SHELL_ARG",
+            "byId",
+            "files",
+            "adjacency",
+        ] {
+            let declaration = facts
+                .declarations
+                .iter()
+                .find(|item| item.name == name)
+                .unwrap_or_else(|| panic!("missing {name}: {facts:?}"));
+            assert_eq!(
+                declaration.kind,
+                DeclarationKind::Constant,
+                "{name} is a value initializer"
+            );
+        }
+    }
+
+    #[test]
+    fn exported_functions_and_returned_object_methods_are_declarations() {
+        let source = "export function runCommand(command, args = [], options = {}) {}\n\
+             export function createGate() {\n\
+             \x20 return {\n\
+             \x20   shouldShow({ force = false } = {}) { return force },\n\
+             \x20   reset() {},\n\
+             \x20 }\n\
+             }\n\
+             export function createClassifier() {\n\
+             \x20 return { explain(path, options = {}) { return path } }\n\
+             }\n";
+        let facts = extract(source, Language::JavaScript);
+        let declared = facts
+            .declarations
+            .iter()
+            .map(|item| (item.name.as_str(), item.kind, item.owner.as_deref()))
+            .collect::<Vec<_>>();
+        assert!(
+            declared.contains(&("runCommand", DeclarationKind::Function, None)),
+            "got {declared:?}"
+        );
+        for (name, owner) in [
+            ("shouldShow", "createGate"),
+            ("reset", "createGate"),
+            ("explain", "createClassifier"),
+        ] {
+            assert!(
+                declared.contains(&(name, DeclarationKind::Method, Some(owner))),
+                "missing {owner}.{name}; got {declared:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn exporting_an_imported_binding_keeps_its_origin() {
+        let source =
+            "import { safeRead, MAX_FILE_BYTES } from '../util.js';\nexport { safeRead };\n";
+        let facts = extract(source, Language::JavaScript);
+        let forwarded = facts
+            .imports
+            .iter()
+            .find(|item| item.reexport)
+            .expect("local export of imported binding");
+        assert_eq!(forwarded.specifier, "../util.js");
+        assert_eq!(forwarded.names, ["safeRead"]);
+        assert_eq!(
+            forwarded.bindings,
+            [ImportBinding {
+                imported: "safeRead".to_owned(),
+                local: "safeRead".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn aliased_imports_preserve_original_and_local_names() {
+        let facts = extract(
+            "import Default, {\n\
+             \x20 architectureViolation as violation,\n\
+             \x20 matchComponentSelector as matches,\n\
+             } from './architecture.js';\n\
+             import * as catalog from './catalog.js';\n",
+            Language::JavaScript,
+        );
+        let architecture = facts
+            .imports
+            .iter()
+            .find(|item| item.specifier == "./architecture.js")
+            .expect("architecture import");
+        assert_eq!(architecture.names, ["Default", "violation", "matches"]);
+        assert_eq!(
+            architecture.bindings,
+            [
+                ImportBinding {
+                    imported: "default".to_owned(),
+                    local: "Default".to_owned(),
+                },
+                ImportBinding {
+                    imported: "architectureViolation".to_owned(),
+                    local: "violation".to_owned(),
+                },
+                ImportBinding {
+                    imported: "matchComponentSelector".to_owned(),
+                    local: "matches".to_owned(),
+                },
+            ]
+        );
+        let catalog = facts
+            .imports
+            .iter()
+            .find(|item| item.specifier == "./catalog.js")
+            .expect("namespace import");
+        assert_eq!(
+            catalog.bindings,
+            [ImportBinding {
+                imported: "*".to_owned(),
+                local: "catalog".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn nested_template_text_never_becomes_a_call() {
+        let source = r"function exactUsage(files) {
+  return `${files ? ` in ${plural(files)} file(s)` : ''}`
+}
+";
+        let facts = extract(source, Language::JavaScript);
+        assert!(
+            !facts
+                .references
+                .iter()
+                .any(|reference| reference.name == "file"),
+            "`file(s)` is literal template text, got {:?}",
+            facts.references
+        );
+        let plural = facts
+            .references
+            .iter()
+            .find(|reference| reference.name == "plural")
+            .expect("call in a nested interpolation");
+        assert_eq!(plural.kind, ReferenceKind::Call);
+        assert_eq!(plural.owner.as_deref(), Some("exactUsage"));
+        assert_eq!(plural.span.line, 2);
+    }
+
+    #[test]
+    fn template_interpolations_keep_all_calls_and_exact_spans() {
+        let source = r"function describe(blob, name, edge, graph) {
+  const mentioned = new RegExp(`x${escRe(name)}y`).test(blob)
+  return `${compileKind(edge) ? labelOf(graph, edge.id) : ''}`
+}
+";
+        let facts = extract(source, Language::JavaScript);
+        let calls = facts
+            .references
+            .iter()
+            .filter(|reference| reference.kind == ReferenceKind::Call)
+            .collect::<Vec<_>>();
+        for (name, line) in [
+            ("RegExp", 2),
+            ("escRe", 2),
+            ("test", 2),
+            ("compileKind", 3),
+            ("labelOf", 3),
+        ] {
+            let reference = calls
+                .iter()
+                .find(|reference| reference.name == name)
+                .unwrap_or_else(|| panic!("missing {name}, got {calls:?}"));
+            assert_eq!(reference.span.line, line);
+            assert_eq!(
+                &source[reference.span.start..reference.span.end],
+                name,
+                "relocated span must name the original call"
+            );
+            assert_eq!(reference.owner.as_deref(), Some("describe"));
+        }
+    }
+
+    #[test]
+    fn nested_call_arguments_are_not_object_methods() {
+        let source = r"function build(makeClient, session) {
+  return {
+    make: () => makeClient({ timeoutMs: Math.max(100, remaining(session)) }),
+  }
+}
+";
+        let facts = extract(source, Language::JavaScript);
+        let remaining = facts
+            .references
+            .iter()
+            .filter(|reference| {
+                reference.name == "remaining" && reference.kind == ReferenceKind::Call
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(remaining.len(), 1, "got {:?}", facts.references);
+        assert_eq!(remaining[0].span.line, 3);
+        assert!(
+            !facts.declarations.iter().any(|declaration| {
+                declaration.name == "remaining" && declaration.kind == DeclarationKind::Method
+            }),
+            "a nested argument is not an object method: {:?}",
+            facts.declarations
+        );
+    }
+
+    #[test]
+    fn default_object_parameter_is_not_the_function_body() {
+        let source = r"export function runCommand(command, args = [], options = {}) {
+  return spawn(command, args, { env: childProcessEnv(options.env || {}) })
+}
+";
+        let facts = extract(source, Language::JavaScript);
+        let declaration = facts
+            .declarations
+            .iter()
+            .find(|declaration| declaration.name == "runCommand")
+            .expect("exported function declaration");
+        assert_eq!(declaration.kind, DeclarationKind::Function);
+        assert!(declaration.exported);
+        let environment = facts
+            .references
+            .iter()
+            .find(|reference| reference.name == "childProcessEnv")
+            .expect("call inside function body");
+        assert_eq!(environment.owner.as_deref(), Some("runCommand"));
+    }
+
+    #[test]
+    fn call_in_returned_object_property_is_retained() {
+        let source = r"function withGraph(graph) {
+  const root = mkdtempSync('prefix')
+  const graphPath = join(root, 'graph.json')
+  return {root, graphPath, graph: loadGraph(graphPath)}
+}
+";
+        let facts = extract(source, Language::JavaScript);
+        let load = facts
+            .references
+            .iter()
+            .find(|reference| {
+                reference.name == "loadGraph" && reference.kind == ReferenceKind::Call
+            })
+            .unwrap_or_else(|| panic!("missing loadGraph, got {facts:?}"));
+        assert_eq!(load.owner.as_deref(), Some("withGraph"));
+        assert_eq!(load.span.line, 4);
+    }
+
+    #[test]
+    fn object_method_names_are_not_calls_but_their_bodies_are() {
+        let source = r"function wrap(client) {
+  return Object.freeze({
+    fromUri(uri) { return client.normalizer.fromUri(uri) },
+    kill() { client.kill() },
+  })
+}
+";
+        let facts = extract(source, Language::JavaScript);
+        let calls = facts
+            .references
+            .iter()
+            .filter(|reference| reference.kind == ReferenceKind::Call)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|reference| reference.name == "fromUri")
+                .count(),
+            1,
+            "only the body call is a reference, got {calls:?}"
+        );
+        let from_uri = calls
+            .iter()
+            .find(|reference| reference.name == "fromUri")
+            .expect("body call");
+        assert_eq!(from_uri.receiver.as_deref(), Some("normalizer"));
+        assert_eq!(from_uri.span.line, 3);
+        assert!(
+            from_uri.span.column > 30,
+            "the call must point inside the body, got {:?}",
+            from_uri.span
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|reference| reference.name == "kill")
+                .count(),
+            1,
+            "only client.kill() is a call, got {calls:?}"
+        );
+    }
+
+    #[test]
+    fn typescript_generic_calls_keep_their_call_fact() {
+        let facts = extract(
+            "export async function loadUser() { return get<User>('/users/1'); }\n",
+            Language::TypeScript,
+        );
+        let call = facts
+            .references
+            .iter()
+            .find(|reference| reference.name == "get" && reference.kind == ReferenceKind::Call)
+            .expect("generic call");
+        assert_eq!(call.string_arguments, ["/users/1"]);
+    }
+
+    #[test]
+    fn calls_inside_object_fields_and_nested_arguments_are_all_retained() {
+        let source = "function score(entry, count, total) {\n\
+             \x20 return {...entry, hotspotScore: round(Math.sqrt(entry.value))}\n\
+             }\n\
+             function pair(pairs, count, total) {\n\
+             \x20 pairs.push({jaccard: round(count / total), lift: round(Math.max(count, total))})\n\
+             }\n";
+        let facts = extract(source, Language::JavaScript);
+        let calls = facts
+            .references
+            .iter()
+            .filter(|reference| reference.kind == ReferenceKind::Call)
+            .map(|reference| (reference.name.as_str(), reference.span.line))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            calls.iter().filter(|(name, _)| *name == "round").count(),
+            3,
+            "every aliased round call must survive, got {calls:?}"
+        );
+        for expected in [
+            ("round", 2),
+            ("sqrt", 2),
+            ("push", 5),
+            ("round", 5),
+            ("max", 5),
+        ] {
+            assert!(
+                calls.contains(&expected),
+                "missing {expected:?}; got {calls:?}"
+            );
+        }
+        for false_method in ["round", "sqrt", "max"] {
+            assert!(
+                !facts.declarations.iter().any(|declaration| {
+                    declaration.name == false_method && declaration.kind == DeclarationKind::Method
+                }),
+                "a call used as an object value is not a method declaration"
+            );
+        }
     }
 }

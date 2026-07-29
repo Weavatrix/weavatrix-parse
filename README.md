@@ -44,13 +44,14 @@ hash delimiters, triple-quoted Python strings, SQL's doubled-quote escape,
 significant indentation, whether a slash opens a regular expression or divides,
 and whether a quote opens a character literal or a lifetime.
 
-Structural extraction — declarations, imports and references with spans —
-covers eighteen languages and formats:
+Structural extraction — declarations, imports, references and typed transport
+contracts with byte spans — covers the following languages and formats:
 
 | | |
 |---|---|
 | Curly-brace languages | JavaScript, TypeScript, Rust, Go, Java, C#, C, C++, Swift, Solidity |
 | Own scoping model | Python, SQL |
+| Contract schemas | GraphQL SDL/operations, Protocol Buffers/proto3 |
 | Web | HTML, CSS/SCSS/Less, Vue and Svelte components |
 | Configuration and markup | Terraform/HCL, XML |
 | Documents | Markdown, MDX, reStructuredText, AsciiDoc |
@@ -99,34 +100,34 @@ Python and SQL each have.
 
 ## Measured against tree-sitter
 
-Same corpus, same machine, both sides measured in the same interleaved rounds so
-machine load cannot favour either. `extract` is tokens plus facts; `ts walk` is
-tree-sitter parsing plus one traversal, which is the cheapest way a consumer can
-actually reach the same facts. Full method and caveats in
-[docs/comparison.md](docs/comparison.md).
+Same immutable input, same process and interleaved order for both sides. After
+one warm-up, the table reports the median of seven measured rounds. Each
+language is capped at 8 MiB so one vendored tree cannot dominate. `extract` is
+tokens plus facts; `ts walk` is tree-sitter parsing plus one traversal, which is
+the cheapest way a tree-sitter consumer can reach structural facts. Full method
+and caveats are in [docs/comparison.md](docs/comparison.md).
 
-| language | files | MB | tokenize | extract | ts parse + walk | ratio |
-|---|---|---|---|---|---|---|
-| javascript | 1047 | 8.1 | 92.8 MB/s | 40.7 MB/s | 4.4 MB/s | 9.3× |
-| typescript | 592 | 8.1 | 84.8 | 57.9 | 5.7 | 10.2× |
-| python | 1064 | 8.1 | 143.5 | 108.8 | 7.9 | 13.9× |
-| rust | 1138 | 7.6 | 54.4 | 26.5 | 3.0 | 8.8× |
-| go | 879 | 4.2 | 105.3 | 58.5 | 5.3 | 11.1× |
-| java | 399 | 2.4 | 112.2 | 56.4 | 6.9 | 8.2× |
-| xml | 90 | 5.4 | 135.4 | 54.7 | 3.7 | 14.8× |
-| markdown | 1628 | 8.4 | 97.9 | 379.5 | 2.5 | 149.6× |
-| bash | 268 | 0.4 | 121.9 | 35.6 | 3.9 | 9.1× |
-| terraform | 79 | 0.2 | 64.8 | 40.7 | 1.3 | 31.2× |
-| sql | 20 | 0.1 | 75.0 | 50.2 | 2.1 | 23.7× |
-| c# | 7 | 0.1 | 132.5 | 62.4 | 3.3 | 18.8× |
-| swift | 1 | 0.0 | 119.4 | 42.9 | 1.6 | 27.5× |
+| language | files | MiB | tokenize | extract | ts parse + walk | ratio | interpretation |
+|---|---:|---:|---:|---:|---:|---:|---|
+| JavaScript | 720 | 8.0 | 129.4 MB/s | 58.6 MB/s | 6.3 MB/s | 9.31x | measured corpus |
+| TypeScript | 1789 | 8.0 | 100.3 | 38.5 | 3.6 | 10.68x | measured corpus |
+| Python | 1036 | 7.6 | 174.2 | 112.4 | 12.3 | 9.12x | measured corpus |
+| Rust | 838 | 5.1 | 95.9 | 42.0 | 4.9 | 8.49x | measured corpus |
+| Java | 389 | 2.4 | 107.0 | 49.7 | 7.3 | 6.77x | measured corpus |
+| XML | 20 | 5.3 | 95.7 | 34.8 | 2.2 | 15.70x | byte-heavy, only 20 files |
+| Go | 40 | 0.2 | 105.4 | 56.5 | 5.3 | 10.58x | small corpus; no speed claim |
+| C | 23 | 0.2 | 114.4 | 56.7 | 4.0 | 14.21x | small corpus; no speed claim |
+| C++ | 3 | <0.1 | 85.7 | 36.6 | 2.3 | 15.99x | small corpus; no speed claim |
+| SQL | 4 | <0.1 | 103.3 | 56.1 | 5.2 | 10.80x | small corpus; no speed claim |
+| Bash | 33 | <0.1 | 165.5 | 75.1 | 7.4 | 10.19x | small corpus; no speed claim |
 
-Read the small corpora — Swift, C#, SQL, Terraform — as "no measurement" rather
-than as a result. Absolute throughput moves with whatever else the machine is
-doing; the ratio does not, because both sides are timed in the same interleaved
-rounds. A run is only used if it is internally consistent: `ts walk` must never
-beat the `ts parse` it contains, and `extract` must never beat the `tokenize` it
-contains. Runs that failed that test have been discarded rather than published.
+GraphQL, protobuf, C#, Swift and Terraform had no files in this selected corpus,
+so there is no throughput result for them. GraphQL and protobuf correctness is
+instead covered by exact typed fixtures. The measured code-language range is
+currently 6.77x to 10.68x, not 30x; a 30x target remains unfulfilled.
+The machine-readable table is checked in as
+`benchmark-results/competitor-median-2026-07-29.txt` (SHA-256
+`8C25F0BD16EC8A458B0ACEADF9D26D6E9E7AB0F6AD3CE6329870AD66E993CCCD`).
 
 Markdown is the one exception to the second rule, and it is not a result to be
 proud of: prose has no token structure, so the document extractor reads lines
@@ -139,18 +140,17 @@ marks them with a dedicated node type.
 
 | language | tree-sitter | ours | missed | agreement |
 |---|---|---|---|---|
-| javascript | 1471 | 3832 | 0 | 100.0% |
-| typescript | 2373 | 2634 | 0 | 100.0% |
-| python | 5814 | 5822 | 0 | 100.0% |
-| rust | 5688 | 5691 | 0 | 100.0% |
-| go | 5075 | 5075 | 0 | 100.0% |
+| javascript | 2872 | 3081 | 0 | 100.0% |
+| typescript | 9579 | 9758 | 0 | 100.0% |
+| python | 5668 | 5671 | 0 | 100.0% |
+| rust | 3942 | 3943 | 0 | 100.0% |
+| go | 277 | 277 | 0 | 100.0% |
 | java | 4586 | 4586 | 0 | 100.0% |
-| c# | 28 | 28 | 0 | 100.0% |
 
-Where our count exceeds tree-sitter's, the surplus was read rather than assumed:
-in JavaScript it is `require()`, which `import_statement` cannot see, and in
-TypeScript it is `typeof import("...")` in type positions. Both are real
-dependencies.
+This proves zero misses against tree-sitter's dedicated import nodes on this
+corpus. It does not by itself prove that every surplus fact is correct:
+`require()` and type-position imports are expected examples, while the full
+surplus remains subject to source review.
 
 The comparison earns its keep by finding defects, not by producing a table.
 Every one of these was found by running it and read in the source before being
@@ -174,7 +174,8 @@ Reproduce with `tools/competitor-bench`, a workspace kept outside the published
 crate so tree-sitter's C grammars never reach it:
 
 ```bash
-cargo run --release --manifest-path tools/competitor-bench/Cargo.toml -- <corpus-dir>
+cargo run --release --manifest-path tools/competitor-bench/Cargo.toml -- \
+  --output target/competitor.txt <corpus-dir>...
 ```
 
 ## What this does not do yet

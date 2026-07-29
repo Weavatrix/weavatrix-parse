@@ -204,6 +204,7 @@ impl Extractor<'_, '_> {
                 type_only: false,
                 reexport: false,
                 names: Vec::new(),
+                bindings: Vec::new(),
             });
             return Some(after);
         }
@@ -256,6 +257,7 @@ impl Extractor<'_, '_> {
                 type_only: false,
                 reexport: false,
                 names: Vec::new(),
+                bindings: Vec::new(),
             });
             recorded += 1;
             cursor = after;

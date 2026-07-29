@@ -171,6 +171,7 @@ impl Extractor<'_, '_> {
             type_only: false,
             reexport: false,
             names: Vec::new(),
+            bindings: Vec::new(),
         });
     }
 
@@ -295,6 +296,7 @@ impl Extractor<'_, '_> {
                         type_only: false,
                         reexport: false,
                         names: Vec::new(),
+                        bindings: Vec::new(),
                     });
                 }
             }

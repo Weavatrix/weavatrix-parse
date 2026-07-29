@@ -7,7 +7,9 @@
 //! walk serves all seven instead of seven near-identical scanners - and adding
 //! the next such language costs a table, not a scanner.
 
-use crate::facts::{Declaration, DeclarationKind, Facts, Import, Reference, ReferenceKind, Span};
+use crate::facts::{
+    Declaration, DeclarationKind, Facts, Import, ImportBinding, Reference, ReferenceKind, Span,
+};
 use crate::syntax::Language;
 use crate::token::{Mode, Token, TokenKind, Tokenizer};
 
@@ -39,6 +41,9 @@ struct Rules {
     modifiers: &'static [&'static str],
     /// Whether a bare `name(` at type-body depth declares a method.
     braced_members: bool,
+    /// Whether `const (...)` and `var (...)` contain one declaration spec per
+    /// top-level line. This is Go syntax, not a generic braced-language rule.
+    grouped_declarations: bool,
     /// Whether a function is declared by a return type rather than a keyword,
     /// as C and C++ do: `int add(int a, int b) { }`.
     typed_functions: bool,
@@ -71,6 +76,7 @@ impl Rules {
                 imports: &["use", "mod"],
                 modifiers: &["pub", "async", "unsafe", "extern", "default"],
                 braced_members: false,
+                grouped_declarations: false,
                 typed_functions: false,
                 exported_keyword: Some("pub"),
                 scope_keywords: &["impl"],
@@ -114,6 +120,7 @@ impl Rules {
                     "throws",
                 ],
                 braced_members: false,
+                grouped_declarations: false,
                 typed_functions: false,
                 // `open` is wider than `public`, but both leave the module,
                 // and `exported` records only whether it leaves.
@@ -130,6 +137,7 @@ impl Rules {
                 imports: &["import"],
                 modifiers: &[],
                 braced_members: false,
+                grouped_declarations: true,
                 typed_functions: false,
                 exported_keyword: None,
                 scope_keywords: &[],
@@ -158,6 +166,7 @@ impl Rules {
                     "readonly",
                 ],
                 braced_members: true,
+                grouped_declarations: false,
                 typed_functions: false,
                 exported_keyword: Some("public"),
                 scope_keywords: &[],
@@ -181,6 +190,7 @@ impl Rules {
                     "pure", "view", "payable",
                 ],
                 braced_members: false,
+                grouped_declarations: false,
                 typed_functions: false,
                 // Anything not marked internal or private is reachable from
                 // another contract, which is what export means here.
@@ -197,6 +207,7 @@ impl Rules {
                 imports: &["#include", "include"],
                 modifiers: &["static", "inline", "extern", "const", "virtual"],
                 braced_members: true,
+                grouped_declarations: false,
                 typed_functions: true,
                 exported_keyword: None,
                 scope_keywords: &[],
@@ -336,6 +347,9 @@ impl Extractor<'_, '_> {
 
     /// The module forms these languages write: `use a::b;`, `mod x;`,
     /// `import "path"`, grouped Go imports, `import a.b.C;`, `using X;`.
+    // One pass keeps the shared statement boundaries beside the language
+    // spellings; those fail-open limits are what prevent run-on imports.
+    #[allow(clippy::too_many_lines)]
     fn import(&mut self, start: usize) -> Option<usize> {
         // `pub mod x;` is still a module dependency, so modifiers are stepped
         // over here exactly as a declaration would step over them.
@@ -358,18 +372,26 @@ impl Extractor<'_, '_> {
         if !self.rules.imports.contains(&word) {
             return None;
         }
+        let mut bindings = Vec::new();
         // A parenthesised block lists several paths, as Go writes them.
         if self.punct(index + 1, "(") {
             let mut cursor = index + 2;
             let limit = (index + 512).min(self.tokens.len());
             while cursor < limit && !self.punct(cursor, ")") {
                 if self.kind(cursor) == Some(TokenKind::String) {
+                    let specifier = self.text(cursor).trim_matches(['"', '`']).to_owned();
+                    let bindings = self.package_import_bindings(cursor, &specifier);
+                    let names = bindings
+                        .iter()
+                        .map(|binding| binding.local.clone())
+                        .collect();
                     self.facts.imports.push(Import {
-                        specifier: self.text(cursor).trim_matches(['"', '`']).to_owned(),
+                        specifier,
                         span: self.span(cursor, cursor),
                         type_only: false,
                         reexport: false,
-                        names: Vec::new(),
+                        names,
+                        bindings,
                     });
                 }
                 cursor += 1;
@@ -389,6 +411,7 @@ impl Extractor<'_, '_> {
                 type_only: false,
                 reexport: false,
                 names: Vec::new(),
+                bindings: Vec::new(),
             });
             return Some(index + 2);
         }
@@ -404,6 +427,12 @@ impl Extractor<'_, '_> {
                 // before it was a list of imported names, not a path.
                 specifier.clear();
                 specifier.push_str(self.text(cursor).trim_matches(['"', '`', '\'']));
+                if word == "import"
+                    && bindings.is_empty()
+                    && self.text(cursor.wrapping_sub(1)) != "from"
+                {
+                    bindings = self.package_import_bindings(cursor, &specifier);
+                }
                 cursor += 1;
                 break;
             }
@@ -414,13 +443,33 @@ impl Extractor<'_, '_> {
                 // A trailing group narrows a path already read, as in
                 // `use a::{b, c}`. A leading one lists names being imported
                 // from a path still to come, as in `import {A} from "./x"`.
+                let mut close = cursor + 1;
+                while close < limit && !self.punct(close, "}") {
+                    close += 1;
+                }
+                bindings.extend(self.named_import_bindings(cursor + 1, close));
                 if !specifier.is_empty() {
+                    cursor = close.saturating_add(1);
                     break;
                 }
-                while cursor < limit && !self.punct(cursor, "}") {
-                    cursor += 1;
-                }
-                cursor += 1;
+                cursor = close.saturating_add(1);
+                continue;
+            }
+            if word == "use"
+                && self.text(cursor) == "as"
+                && self.kind(cursor + 1) == Some(TokenKind::Identifier)
+            {
+                let imported = specifier
+                    .trim_end_matches(':')
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(specifier.as_str())
+                    .to_owned();
+                bindings.push(ImportBinding {
+                    imported,
+                    local: self.text(cursor + 1).to_owned(),
+                });
+                cursor += 2;
                 continue;
             }
             // A specifier ends with its line. Reading on would swallow what
@@ -444,14 +493,86 @@ impl Extractor<'_, '_> {
         if specifier.is_empty() {
             return None;
         }
+        if word == "use" && bindings.is_empty() {
+            let imported = specifier
+                .rsplit("::")
+                .next()
+                .unwrap_or(specifier.as_str())
+                .to_owned();
+            if imported != "*" {
+                bindings.push(ImportBinding {
+                    local: imported.clone(),
+                    imported,
+                });
+            }
+        }
+        let names = bindings
+            .iter()
+            .map(|binding| binding.local.clone())
+            .collect();
         self.facts.imports.push(Import {
             specifier,
             span: self.span(index, cursor.saturating_sub(1)),
             type_only: false,
             reexport: forwarding,
-            names: Vec::new(),
+            names,
+            bindings,
         });
         Some(cursor)
+    }
+
+    fn named_import_bindings(&self, start: usize, end: usize) -> Vec<ImportBinding> {
+        let mut bindings = Vec::new();
+        let mut cursor = start;
+        while cursor < end {
+            if self.kind(cursor) != Some(TokenKind::Identifier)
+                || matches!(self.text(cursor), "as" | "type")
+                || self.text(cursor.wrapping_sub(1)) == "as"
+            {
+                cursor += 1;
+                continue;
+            }
+            let imported = self.text(cursor).to_owned();
+            let local = if self.text(cursor + 1) == "as"
+                && self.kind(cursor + 2) == Some(TokenKind::Identifier)
+            {
+                self.text(cursor + 2).to_owned()
+            } else {
+                imported.clone()
+            };
+            bindings.push(ImportBinding { imported, local });
+            cursor += 1;
+        }
+        bindings
+    }
+
+    fn package_import_bindings(&self, path: usize, specifier: &str) -> Vec<ImportBinding> {
+        let imported = specifier
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(specifier)
+            .to_owned();
+        let previous = path.wrapping_sub(1);
+        let same_line = self
+            .tokens
+            .get(previous)
+            .is_some_and(|token| token.line == self.tokens[path].line);
+        let local = if same_line
+            && self.kind(previous) == Some(TokenKind::Identifier)
+            && !matches!(self.text(previous), "import" | "from")
+        {
+            self.text(previous).to_owned()
+        } else if same_line && self.punct(previous, ".") {
+            "*".to_owned()
+        } else {
+            imported.clone()
+        };
+        if local == "_" {
+            Vec::new()
+        } else {
+            vec![ImportBinding { imported, local }]
+        }
     }
 
     fn declaration(&mut self, index: usize) -> Option<usize> {
@@ -481,6 +602,12 @@ impl Extractor<'_, '_> {
             return Some(next);
         }
         let keyword = self.text(cursor);
+        if keyword == "const" && self.punct(cursor.wrapping_sub(1), "*") {
+            // Rust raw-pointer pointees (`*const T`) are types, not constant
+            // declarations. The declaration walk sees every identifier, so
+            // this boundary must be explicit.
+            return None;
+        }
         let Some((_, kind)) = self
             .rules
             .declarations
@@ -493,8 +620,8 @@ impl Extractor<'_, '_> {
         };
         // Go groups declarations: `const ( A = 1\n B = 2 )` declares both, and
         // the keyword is followed by a parenthesis rather than by a name.
-        if self.punct(cursor + 1, "(") {
-            return self.grouped_declarations(index, cursor + 2, *kind);
+        if self.rules.grouped_declarations && self.punct(cursor + 1, "(") {
+            return Some(self.grouped_declarations(index, cursor + 2, *kind));
         }
         let name_index = cursor + 1;
         if self.kind(name_index) != Some(TokenKind::Identifier) {
@@ -605,18 +732,74 @@ impl Extractor<'_, '_> {
     ///
     /// Each line of the group declares one name, so the first identifier on a
     /// line is the declaration and the rest is its value.
-    fn grouped_declarations(
-        &mut self,
-        start: usize,
-        open: usize,
-        kind: DeclarationKind,
-    ) -> Option<usize> {
-        let limit = (open + 1024).min(self.tokens.len());
+    fn grouped_declarations(&mut self, start: usize, open: usize, kind: DeclarationKind) -> usize {
+        let limit = self.tokens.len();
         let mut cursor = open;
         let mut line = 0;
         let mut found = false;
-        while cursor < limit && !self.punct(cursor, ")") {
-            if self.kind(cursor) == Some(TokenKind::Identifier) && self.tokens[cursor].line != line
+        let mut closed = false;
+        let mut parentheses = 1_u32;
+        let mut braces = 0_u32;
+        let mut brackets = 0_u32;
+        while cursor < limit && parentheses != 0 {
+            if self.punct(cursor, "(") {
+                parentheses = parentheses.saturating_add(1);
+                cursor += 1;
+                continue;
+            }
+            if self.punct(cursor, ")") {
+                parentheses = parentheses.saturating_sub(1);
+                cursor += 1;
+                if parentheses == 0 {
+                    closed = true;
+                }
+                continue;
+            }
+            if self.punct(cursor, "{") {
+                braces = braces.saturating_add(1);
+                cursor += 1;
+                continue;
+            }
+            if self.punct(cursor, "}") {
+                braces = braces.saturating_sub(1);
+                cursor += 1;
+                continue;
+            }
+            if self.punct(cursor, "[") {
+                brackets = brackets.saturating_add(1);
+                cursor += 1;
+                continue;
+            }
+            if self.punct(cursor, "]") {
+                brackets = brackets.saturating_sub(1);
+                cursor += 1;
+                continue;
+            }
+            if parentheses == 1
+                && braces == 0
+                && brackets == 0
+                && self.kind(cursor) == Some(TokenKind::Identifier)
+                && self.tokens[cursor].line != line
+                && !cursor.checked_sub(1).is_some_and(|previous| {
+                    self.kind(previous) == Some(TokenKind::Punctuation)
+                        && matches!(
+                            self.text(previous),
+                            "=" | ","
+                                | "."
+                                | "+"
+                                | "-"
+                                | "*"
+                                | "/"
+                                | "%"
+                                | "&"
+                                | "|"
+                                | "^"
+                                | "!"
+                                | "<"
+                                | ">"
+                                | ":"
+                        )
+                })
             {
                 line = self.tokens[cursor].line;
                 let name = self.text(cursor).to_owned();
@@ -630,9 +813,25 @@ impl Extractor<'_, '_> {
                 });
                 found = true;
             }
+            // Group initializers still contain calls (`flag.String(...)`,
+            // constructors, conversions). The declaration pre-pass must not
+            // make those references disappear merely because it advances over
+            // the complete parenthesised group.
+            if self.kind(cursor) == Some(TokenKind::Identifier)
+                && let Some(next) = self.call(cursor)
+            {
+                cursor = next;
+                continue;
+            }
             cursor += 1;
         }
-        found.then_some(cursor + 1).or(Some(start + 1))
+        if closed && found {
+            cursor
+        } else {
+            // Malformed or pathologically truncated input must not swallow the
+            // remainder of the file.
+            start + 1
+        }
     }
 
     /// `impl Type`, `impl Trait for Type` and `extension Type` name what their
@@ -869,7 +1068,7 @@ impl Extractor<'_, '_> {
         let name = self.text(index).to_owned();
         if matches!(
             name.as_str(),
-            "if" | "for" | "while" | "switch" | "match" | "return" | "catch" | "sizeof"
+            "if" | "for" | "while" | "switch" | "match" | "return" | "catch" | "sizeof" | "fn"
         ) {
             return None;
         }
@@ -918,7 +1117,7 @@ impl Extractor<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::extract;
-    use crate::facts::{DeclarationKind, ReferenceKind};
+    use crate::facts::{DeclarationKind, ImportBinding, ReferenceKind};
     use crate::syntax::Language;
 
     fn declared(
@@ -991,9 +1190,23 @@ mod tests {
 
     #[test]
     fn a_grouped_use_names_the_module_without_its_separator() {
+        let import = extract("use super::support::{one as first, two};\n", Language::Rust)
+            .imports
+            .remove(0);
+        assert_eq!(import.specifier, "super::support");
+        assert_eq!(import.names, ["first", "two"]);
         assert_eq!(
-            extract("use super::support::{one, two};\n", Language::Rust).imports[0].specifier,
-            "super::support"
+            import.bindings,
+            [
+                ImportBinding {
+                    imported: "one".to_owned(),
+                    local: "first".to_owned(),
+                },
+                ImportBinding {
+                    imported: "two".to_owned(),
+                    local: "two".to_owned(),
+                },
+            ]
         );
     }
 
@@ -1027,8 +1240,44 @@ mod tests {
     }
 
     #[test]
+    fn rust_function_pointer_types_do_not_invent_declarations_or_calls() {
+        let facts = extract(
+            "type Callback = unsafe extern \"system\" fn(\n\
+             \x20   *mut c_void,\n\
+             \x20   *const u16,\n\
+             ) -> *mut c_void;\n",
+            Language::Rust,
+        );
+        assert!(
+            facts
+                .declarations
+                .iter()
+                .any(|item| item.name == "Callback" && item.kind == DeclarationKind::TypeAlias),
+            "the actual alias must survive, got {:?}",
+            facts.declarations
+        );
+        for false_positive in ["mut", "const", "u16", "c_void"] {
+            assert!(
+                !facts
+                    .declarations
+                    .iter()
+                    .any(|item| item.name == false_positive),
+                "{false_positive} is part of a pointer type, got {:?}",
+                facts.declarations
+            );
+        }
+        assert!(
+            !facts
+                .references
+                .iter()
+                .any(|reference| reference.name == "fn" && reference.kind == ReferenceKind::Call),
+            "the function-pointer marker is a type, not a call"
+        );
+    }
+
+    #[test]
     fn go_groups_imports_and_capitalisation_marks_export() {
-        let source = "package main\n\nimport (\n\t\"fmt\"\n\t\"edgehawk.com/app/reader\"\n)\n\n\
+        let source = "package main\n\nimport (\n\tf \"fmt\"\n\t\"edgehawk.com/app/reader\"\n)\n\n\
              func Exported() {}\nfunc internal() {}\n";
         let facts = extract(source, Language::Go);
         assert_eq!(
@@ -1040,6 +1289,20 @@ mod tests {
             ["fmt", "edgehawk.com/app/reader"],
             "a grouped import block yields one fact per path"
         );
+        assert_eq!(
+            facts.imports[0].bindings,
+            [ImportBinding {
+                imported: "fmt".to_owned(),
+                local: "f".to_owned(),
+            }]
+        );
+        assert_eq!(
+            facts.imports[1].bindings,
+            [ImportBinding {
+                imported: "reader".to_owned(),
+                local: "reader".to_owned(),
+            }]
+        );
         let items = facts
             .declarations
             .iter()
@@ -1047,6 +1310,112 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(items.contains(&("Exported", true)), "got {items:?}");
         assert!(items.contains(&("internal", false)), "got {items:?}");
+    }
+
+    #[test]
+    fn go_const_and_var_groups_declare_each_line() {
+        let source = r#"package main
+const (
+    EventAdd = "added"
+    eventDelete = "deleted"
+)
+var (
+    endpoint = flag.String("endpoint", "/events", "endpoint")
+    topics = []string{EventAdd, eventDelete}
+)
+"#;
+        let facts = extract(source, Language::Go);
+        let items = facts
+            .declarations
+            .iter()
+            .map(|item| (item.name.as_str(), item.kind, item.span.line))
+            .collect::<Vec<_>>();
+        for expected in [
+            ("EventAdd", DeclarationKind::Constant, 3),
+            ("eventDelete", DeclarationKind::Constant, 4),
+            ("endpoint", DeclarationKind::Variable, 7),
+            ("topics", DeclarationKind::Variable, 8),
+        ] {
+            assert!(
+                items.contains(&expected),
+                "missing {expected:?}; got {items:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn go_grouped_initializers_keep_their_call_references() {
+        let facts = extract(
+            "package main\nvar (\n flagName = config.String(\"name\")\n)\n",
+            Language::Go,
+        );
+        assert!(
+            facts
+                .declarations
+                .iter()
+                .any(|item| item.name == "flagName" && item.kind == DeclarationKind::Variable),
+            "the grouped declaration must survive"
+        );
+        assert!(
+            facts.references.iter().any(|reference| {
+                reference.name == "String"
+                    && reference.kind == ReferenceKind::Call
+                    && reference.receiver.as_deref() == Some("config")
+            }),
+            "the initializer call must survive, got {:?}",
+            facts.references
+        );
+    }
+
+    #[test]
+    fn go_grouped_values_do_not_turn_continuation_lines_into_declarations() {
+        let source = r#"package main
+var (
+    config = Config{
+        Name: "primary",
+    }
+    continued =
+        buildValue
+    next = 1
+)
+"#;
+        let facts = extract(source, Language::Go);
+        let names = facts
+            .declarations
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>();
+        for expected in ["config", "continued", "next"] {
+            assert!(
+                names.contains(&expected),
+                "missing {expected}; got {names:?}"
+            );
+        }
+        for false_positive in ["Name", "buildValue"] {
+            assert!(
+                !names.contains(&false_positive),
+                "{false_positive} is an initializer expression, got {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_large_go_group_does_not_swallow_following_functions() {
+        use std::fmt::Write as _;
+
+        let mut source = String::from("package main\nvar (\n");
+        for index in 0..1_100 {
+            let _ = writeln!(source, "value{index} = {index}");
+        }
+        source.push_str(")\nfunc AfterGroup() {}\n");
+        let facts = extract(&source, Language::Go);
+        assert!(
+            facts
+                .declarations
+                .iter()
+                .any(|item| item.name == "AfterGroup" && item.kind == DeclarationKind::Function),
+            "the closing group delimiter must return scanning to the following function"
+        );
     }
 
     #[test]
@@ -1078,6 +1447,29 @@ mod tests {
             !items.iter().any(|(name, ..)| name == "forEach"),
             "a call chain inside a body is not a declaration, got {items:?}"
         );
+    }
+
+    #[test]
+    fn java_route_annotations_keep_their_structural_owner_and_literal() {
+        let source = "@RequestMapping(\"warehouse\")\n\
+             public class Service {\n\
+             \x20 @GetMapping(\"/stock\")\n\
+             \x20 public void stock() {}\n\
+             }\n";
+        let facts = extract(source, Language::Java);
+        let class_mapping = facts
+            .calls()
+            .find(|call| call.name == "RequestMapping")
+            .expect("class mapping call");
+        assert_eq!(class_mapping.owner, None);
+        assert_eq!(class_mapping.string_arguments, ["warehouse"]);
+
+        let method_mapping = facts
+            .calls()
+            .find(|call| call.name == "GetMapping")
+            .expect("method mapping call");
+        assert_eq!(method_mapping.owner.as_deref(), Some("Service"));
+        assert_eq!(method_mapping.string_arguments, ["/stock"]);
     }
 
     #[test]

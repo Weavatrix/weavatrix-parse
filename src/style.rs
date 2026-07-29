@@ -126,6 +126,7 @@ impl Extractor<'_, '_> {
                         type_only: false,
                         reexport: keyword.eq_ignore_ascii_case("forward"),
                         names: Vec::new(),
+                        bindings: Vec::new(),
                     });
                     found = true;
                 }

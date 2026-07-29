@@ -1,0 +1,33 @@
+{
+  "schema": "weavatrix.parse-real-corpus.v1",
+  "capBytesPerLanguage": 8388608,
+  "repositories": [
+    "../../analytics",
+    "../../controller-rest-api",
+    "../../frontend",
+    "../../automation",
+    "../../bgp-speaker",
+    "../../grpc-server",
+    "../../warroom",
+    "../ivrit-inbox",
+    "../tellwick-hosted",
+    "../AI-Dev-System",
+    "../radiochron",
+    "../mcport",
+    "../weavatrix-rust",
+    ".",
+    "../weavatrix-scan",
+    "../weavatrix-search",
+    "../weavatrix-search-vector",
+    "../weavatrix-memory",
+    "../weavatrix-graph",
+    "../weavatrix-clone",
+    "../weavatrix-semantic",
+    "../weavatrix-online",
+    {
+      "repository": "../../images",
+      "scan": "../../images/kali/opt/mirai/src/bot",
+      "reason": "The repository is a filesystem image; only its maintained C source tree is product code for this parser corpus."
+    }
+  ]
+}

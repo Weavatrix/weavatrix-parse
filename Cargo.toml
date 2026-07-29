@@ -15,7 +15,7 @@ readme = "README.md"
 keywords = ["parser", "tokenizer", "javascript", "typescript", "static-analysis"]
 categories = ["parser-implementations", "development-tools"]
 
-exclude = ["tools/competitor-bench/**"]
+exclude = ["tools/**"]
 
 [[bench]]
 name = "tokenize"

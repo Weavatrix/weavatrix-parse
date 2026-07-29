@@ -1,0 +1,15 @@
+statistic=median measured_rounds=7 warmup_rounds=1 cap_bytes_per_language=8388608
+language      files      MB    tokenize     extract    ts parse     ts walk extract/ts
+----------------------------------------------------------------------------------------
+javascript      720     8.0      129.4M       58.6M        7.1M        6.3M      9.31x
+typescript     1789     8.0      100.3M       38.5M        3.7M        3.6M     10.68x
+python         1036     7.6      174.2M      112.4M       12.7M       12.3M      9.12x
+rust            838     5.1       95.9M       42.0M        5.7M        4.9M      8.49x
+go               40     0.2      105.4M       56.5M        5.6M        5.3M     10.58x
+java            389     2.4      107.0M       49.7M        7.8M        7.3M      6.77x
+c                23     0.2      114.4M       56.7M        4.1M        4.0M     14.21x
+cpp               3     0.0       85.7M       36.6M        2.2M        2.3M     15.99x
+sql               4     0.0      103.3M       56.1M        5.4M        5.2M     10.80x
+bash             33     0.0      165.5M       75.1M        7.3M        7.4M     10.19x
+markdown        661     1.9      102.5M      352.9M        2.7M        2.7M    132.81x
+xml              20     5.3       95.7M       34.8M        2.3M        2.2M     15.70x

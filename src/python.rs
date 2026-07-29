@@ -6,7 +6,9 @@
 //! rather than raw line prefixes keeps this correct inside triple-quoted
 //! strings, where a line that looks like `def x():` is text, not code.
 
-use crate::facts::{Declaration, DeclarationKind, Facts, Import, Reference, ReferenceKind, Span};
+use crate::facts::{
+    Declaration, DeclarationKind, Facts, Import, ImportBinding, Reference, ReferenceKind, Span,
+};
 use crate::syntax::Language;
 use crate::token::{Mode, Token, TokenKind, Tokenizer};
 
@@ -177,67 +179,110 @@ impl Extractor<'_, '_> {
     /// `import a.b`, `import a as b`, `from .pkg import x`, `from x import *`.
     fn import(&mut self, index: usize) -> Option<usize> {
         let from_form = self.is(index, "from");
+        let line = self.tokens[index].line;
         let mut cursor = index + 1;
-        let mut specifier = String::new();
-        while cursor < self.tokens.len() {
-            let token = &self.tokens[cursor];
-            if token.line != self.tokens[index].line {
-                break;
-            }
-            if from_form && self.is(cursor, "import") {
-                break;
-            }
-            if !from_form && self.punct(cursor, ",") {
-                // `import a, b` declares two modules; record and continue.
-                if !specifier.is_empty() {
-                    self.push_import(&specifier, index, cursor);
-                    specifier.clear();
-                }
-                cursor += 1;
-                continue;
-            }
-            if self.is(cursor, "as") {
-                // The alias is not part of the module path.
-                while cursor < self.tokens.len()
-                    && self.tokens[cursor].line == self.tokens[index].line
-                    && !self.punct(cursor, ",")
-                {
-                    cursor += 1;
-                }
-                continue;
-            }
-            if matches!(
-                self.kind(cursor),
-                Some(TokenKind::Identifier | TokenKind::Punctuation)
-            ) {
+        if from_form {
+            let mut specifier = String::new();
+            while cursor < self.tokens.len()
+                && self.tokens[cursor].line == line
+                && !self.is(cursor, "import")
+            {
                 let text = self.text(cursor);
                 if text == "." || self.kind(cursor) == Some(TokenKind::Identifier) {
                     specifier.push_str(text);
                 }
+                cursor += 1;
+            }
+            if specifier.is_empty() || !self.is(cursor, "import") {
+                return None;
             }
             cursor += 1;
+            let (bindings, end) = self.python_bindings(cursor, line);
+            self.push_import(&specifier, index, end.saturating_sub(1), bindings);
+            return Some(end);
         }
-        if specifier.is_empty() {
-            return None;
-        }
-        self.push_import(&specifier, index, cursor.saturating_sub(1));
-        // In `from x import a, b` the names after `import` are bindings, not
-        // modules; skipping to the end of the line stops them from being read
-        // as another import statement.
-        let line = self.tokens[index].line;
+
         while cursor < self.tokens.len() && self.tokens[cursor].line == line {
-            cursor += 1;
+            let start = cursor;
+            let mut specifier = String::new();
+            while cursor < self.tokens.len()
+                && self.tokens[cursor].line == line
+                && !self.punct(cursor, ",")
+                && !self.is(cursor, "as")
+            {
+                let text = self.text(cursor);
+                if text == "." || self.kind(cursor) == Some(TokenKind::Identifier) {
+                    specifier.push_str(text);
+                }
+                cursor += 1;
+            }
+            if specifier.is_empty() {
+                return None;
+            }
+            let mut local = specifier
+                .split('.')
+                .next()
+                .unwrap_or(specifier.as_str())
+                .to_owned();
+            if self.is(cursor, "as") && self.kind(cursor + 1) == Some(TokenKind::Identifier) {
+                self.text(cursor + 1).clone_into(&mut local);
+                cursor += 2;
+            }
+            self.push_import(
+                &specifier,
+                start,
+                cursor.saturating_sub(1),
+                vec![ImportBinding {
+                    imported: specifier.clone(),
+                    local,
+                }],
+            );
+            if self.punct(cursor, ",") {
+                cursor += 1;
+            }
         }
         Some(cursor)
     }
 
-    fn push_import(&mut self, specifier: &str, start: usize, end: usize) {
+    fn python_bindings(&self, start: usize, line: u32) -> (Vec<ImportBinding>, usize) {
+        let mut bindings = Vec::new();
+        let mut cursor = start;
+        while cursor < self.tokens.len() && self.tokens[cursor].line == line {
+            if self.kind(cursor) != Some(TokenKind::Identifier) {
+                cursor += 1;
+                continue;
+            }
+            let imported = self.text(cursor).to_owned();
+            let mut local = imported.clone();
+            if self.is(cursor + 1, "as") && self.kind(cursor + 2) == Some(TokenKind::Identifier) {
+                self.text(cursor + 2).clone_into(&mut local);
+                cursor += 3;
+            } else {
+                cursor += 1;
+            }
+            bindings.push(ImportBinding { imported, local });
+        }
+        (bindings, cursor)
+    }
+
+    fn push_import(
+        &mut self,
+        specifier: &str,
+        start: usize,
+        end: usize,
+        bindings: Vec<ImportBinding>,
+    ) {
+        let names = bindings
+            .iter()
+            .map(|binding| binding.local.clone())
+            .collect();
         self.facts.imports.push(Import {
             specifier: specifier.to_owned(),
             span: self.span(start, end),
             type_only: false,
             reexport: false,
-            names: Vec::new(),
+            names,
+            bindings,
         });
     }
 
@@ -290,7 +335,7 @@ impl Extractor<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::extract;
-    use crate::facts::DeclarationKind;
+    use crate::facts::{DeclarationKind, ImportBinding};
 
     #[test]
     fn methods_belong_to_their_class_and_indentation_closes_scopes() {
@@ -350,12 +395,12 @@ mod tests {
              import pkg.module\n\
              import json, time\n\
              import numpy as np\n\
-             from .relative import thing\n\
+             from .relative import thing as local_thing\n\
              from ..parent.pkg import other\n";
-        let specifiers = extract(source)
-            .imports
-            .into_iter()
-            .map(|import| import.specifier)
+        let imports = extract(source).imports;
+        let specifiers = imports
+            .iter()
+            .map(|import| import.specifier.as_str())
             .collect::<Vec<_>>();
         assert_eq!(
             specifiers,
@@ -368,6 +413,30 @@ mod tests {
                 ".relative",
                 "..parent.pkg",
             ]
+        );
+        let numpy = imports
+            .iter()
+            .find(|import| import.specifier == "numpy")
+            .expect("numpy import");
+        assert_eq!(numpy.names, ["np"]);
+        assert_eq!(
+            numpy.bindings,
+            [ImportBinding {
+                imported: "numpy".to_owned(),
+                local: "np".to_owned(),
+            }]
+        );
+        let relative = imports
+            .iter()
+            .find(|import| import.specifier == ".relative")
+            .expect("relative import");
+        assert_eq!(relative.names, ["local_thing"]);
+        assert_eq!(
+            relative.bindings,
+            [ImportBinding {
+                imported: "thing".to_owned(),
+                local: "local_thing".to_owned(),
+            }]
         );
     }
 

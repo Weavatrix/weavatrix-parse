@@ -1,0 +1,15 @@
+[workspace]
+
+[package]
+name = "weavatrix-parse-regression-bench"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+weavatrix-parse = { path = "../.." }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

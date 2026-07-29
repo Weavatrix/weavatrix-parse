@@ -15,10 +15,13 @@
 //! No dependencies, no generated grammars, no C, `unsafe` forbidden.
 
 pub mod braced;
+mod contract_tokens;
 pub mod docs;
 pub mod facts;
+pub mod graphql;
 pub mod hcl;
 pub mod markup;
+pub mod protobuf;
 pub mod python;
 pub mod script;
 pub mod shell;
@@ -27,7 +30,10 @@ pub mod style;
 pub mod syntax;
 pub mod token;
 
-pub use facts::{Declaration, DeclarationKind, Facts, Import, Reference, ReferenceKind, Span};
+pub use facts::{
+    Contract, ContractKind, Declaration, DeclarationKind, Facts, GraphqlOperation, GraphqlType,
+    Import, ImportBinding, ParseDiagnostic, Reference, ReferenceKind, Span,
+};
 pub use syntax::{Language, Syntax};
 pub use token::{Mode, Token, TokenKind, Tokenizer, tokenize, tokenize_lite};
 
@@ -39,6 +45,8 @@ pub use token::{Mode, Token, TokenKind, Tokenizer, tokenize, tokenize_lite};
 pub fn extract(source: &str, language: Language) -> Facts {
     match language {
         Language::JavaScript | Language::TypeScript => script::extract(source, language),
+        Language::Graphql => graphql::extract(source),
+        Language::Protobuf => protobuf::extract(source),
         Language::Python => python::extract(source),
         Language::Sql => sql::extract(source),
         Language::Terraform => hcl::extract(source),

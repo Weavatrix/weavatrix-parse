@@ -1,0 +1,102 @@
+name: Publish crate
+
+on:
+  workflow_dispatch:
+    inputs:
+      authentication:
+        description: "Use bootstrap-token only for the first crates.io release; use trusted-publishing afterwards"
+        type: choice
+        required: true
+        default: trusted-publishing
+        options:
+          - trusted-publishing
+          - bootstrap-token
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-crate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # 2026-07-29
+        with:
+          toolchain: 1.89.0
+          components: rustfmt, clippy
+      - name: Verify release tag matches the crate version
+        shell: bash
+        run: |
+          VERSION="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] || { echo "Run this workflow from tag v$VERSION" >&2; exit 1; }
+          [[ "$GITHUB_REF_NAME" == "v$VERSION" ]] || { echo "Tag $GITHUB_REF_NAME does not match crate version $VERSION" >&2; exit 1; }
+      - name: Quality gate
+        shell: bash
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets
+          RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
+      - name: Verify packaged crate
+        run: cargo publish --locked --dry-run
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-24.04
+    environment: crates-io
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # 2026-07-29
+        with:
+          toolchain: 1.89.0
+      - name: Recheck immutable release identity
+        shell: bash
+        run: |
+          VERSION="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          [[ "$GITHUB_REF_TYPE" == "tag" ]]
+          [[ "$GITHUB_REF_NAME" == "v$VERSION" ]]
+      - name: Authenticate with crates.io trusted publishing
+        if: inputs.authentication == 'trusted-publishing'
+        id: crates-io
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+      - name: Publish with a short-lived OIDC token
+        if: inputs.authentication == 'trusted-publishing'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io.outputs.token }}
+        run: cargo publish --locked --no-verify
+      - name: Bootstrap first release with repository secret
+        if: inputs.authentication == 'bootstrap-token'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        shell: bash
+        run: |
+          [[ -n "$CARGO_REGISTRY_TOKEN" ]] || { echo "CARGO_REGISTRY_TOKEN is required only for the first publish" >&2; exit 1; }
+          cargo publish --locked --no-verify
+          echo "::warning::Configure this workflow as a trusted publisher on crates.io, then remove CARGO_REGISTRY_TOKEN."
+      - name: Verify immutable crates.io artifact
+        shell: bash
+        run: |
+          VERSION="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          for attempt in $(seq 1 24); do
+            if curl --fail --silent --show-error \
+              "https://crates.io/api/v1/crates/weavatrix-parse/$VERSION" |
+              jq -e --arg version "$VERSION" '.version.num == $version' >/dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "weavatrix-parse@$VERSION did not become visible on crates.io" >&2
+          exit 1

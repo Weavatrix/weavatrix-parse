@@ -167,6 +167,9 @@ impl<'source> Tokenizer<'source> {
 
     /// Consumes a string literal, returning whether it terminated.
     fn scan_string(&mut self, quote: u8) -> bool {
+        if quote == b'`' {
+            return self.scan_template();
+        }
         let triple =
             self.syntax.triple_quotes && self.peek(1) == Some(quote) && self.peek(2) == Some(quote);
         let closing = if triple { 3 } else { 1 };
@@ -197,6 +200,95 @@ impl<'source> Tokenizer<'source> {
             }
             if current == b'\n' && !triple && !self.syntax.escapes {
                 return false;
+            }
+            self.advance(1);
+        }
+    }
+
+    /// Consumes a JavaScript template, including nested templates inside its
+    /// `${...}` expressions.
+    ///
+    /// A backtick inside an interpolation starts a nested template rather than
+    /// closing the outer one. Treating it as the outer close exposed the nested
+    /// template's text as code, so text such as `file(s)` became a call fact.
+    fn scan_template(&mut self) -> bool {
+        self.advance(1);
+        loop {
+            let Some(current) = self.peek(0) else {
+                return false;
+            };
+            if current == b'\\' {
+                self.advance(2);
+                continue;
+            }
+            if current == b'`' {
+                self.advance(1);
+                return true;
+            }
+            if current == b'$' && self.peek(1) == Some(b'{') {
+                self.advance(2);
+                if !self.scan_template_interpolation() {
+                    return false;
+                }
+                continue;
+            }
+            self.advance(1);
+        }
+    }
+
+    /// Consumes the balanced expression after `${`, stopping after its `}`.
+    fn scan_template_interpolation(&mut self) -> bool {
+        let mut depth = 1_u32;
+        loop {
+            let Some(current) = self.peek(0) else {
+                return false;
+            };
+            if matches!(current, b'\'' | b'"') {
+                if !self.scan_string(current) {
+                    return false;
+                }
+                continue;
+            }
+            if current == b'`' {
+                if !self.scan_template() {
+                    return false;
+                }
+                continue;
+            }
+            if self.starts_with("//") {
+                while self.peek(0).is_some_and(|byte| byte != b'\n') {
+                    self.advance(1);
+                }
+                continue;
+            }
+            if self.starts_with("/*") {
+                if !self.scan_block_comment("/*", "*/") {
+                    return false;
+                }
+                continue;
+            }
+            if current == b'/' {
+                let start = self.offset;
+                let line = self.line;
+                let column = self.column;
+                if self.scan_regex() {
+                    continue;
+                }
+                // A division operator has no closing slash. Restore the
+                // scanner and consume it normally.
+                self.offset = start;
+                self.line = line;
+                self.column = column;
+            }
+            if current == b'{' {
+                depth += 1;
+            } else if current == b'}' {
+                depth -= 1;
+                self.advance(1);
+                if depth == 0 {
+                    return true;
+                }
+                continue;
             }
             self.advance(1);
         }
@@ -465,7 +557,25 @@ impl Tokenizer<'_> {
                     .map_or(1, char::len_utf8);
                 self.advance(width);
             }
-            self.value_before = true;
+            let identifier = &self.source[start..self.offset];
+            self.value_before = !self.syntax.regex_literals
+                || !matches!(
+                    identifier,
+                    "await"
+                        | "case"
+                        | "delete"
+                        | "do"
+                        | "else"
+                        | "in"
+                        | "instanceof"
+                        | "new"
+                        | "of"
+                        | "return"
+                        | "throw"
+                        | "typeof"
+                        | "void"
+                        | "yield"
+                );
             return Some(self.emit(TokenKind::Identifier, start, line, column));
         }
 
@@ -543,6 +653,39 @@ mod tests {
     }
 
     #[test]
+    fn regex_after_return_can_hold_quotes_braces_and_backticks() {
+        let source = concat!(
+            "function winQuote(value) {\n",
+            "  const s = String(value)\n",
+            "  return /[\\s&()[\\]{}^=;!'+,`~|<>\"]/.test(s) ",
+            "? `\"${s.replace(/\"/g, '\"\"')}\"` : s\n",
+            "}\n",
+            "export function runCommand(command, args = [], options = {}) {}\n",
+        );
+        assert_round_trip(source, Language::JavaScript);
+        let tokens = tokenize(source, Language::JavaScript);
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|token| token.kind == TokenKind::Regex)
+                .count(),
+            1,
+            "the regex inside the template interpolation belongs to its string token"
+        );
+        assert!(
+            !tokens
+                .iter()
+                .any(|token| token.kind == TokenKind::Unterminated)
+        );
+        assert!(
+            tokens.iter().any(|token| {
+                token.kind == TokenKind::Identifier && token.text(source) == "runCommand"
+            }),
+            "the regex and template above must not swallow the next declaration"
+        );
+    }
+
+    #[test]
     fn rust_block_comments_nest_and_raw_strings_hold_quotes() {
         let source = "/* outer /* inner */ still */ let s = r#\"a \"quoted\" b\"#;\n";
         assert_round_trip(source, Language::Rust);
@@ -588,6 +731,52 @@ mod tests {
         assert!(
             tokens.iter().any(|token| token.kind == TokenKind::Indent),
             "leading whitespace is marked in an indentation-sensitive language"
+        );
+    }
+
+    #[test]
+    fn graphql_and_protobuf_contract_sources_round_trip_losslessly() {
+        let graphql = concat!(
+            "\"\"\"A description with # inside\"\"\"\n",
+            "type Query { user(id: ID!): User } # schema comment\n",
+            "query Get($id: ID!) { user(id: $id) { id } }\n",
+        );
+        assert_round_trip(graphql, Language::Graphql);
+        let graphql_tokens = tokenize(graphql, Language::Graphql);
+        assert_eq!(
+            graphql_tokens
+                .iter()
+                .filter(|token| token.kind == TokenKind::String)
+                .count(),
+            1,
+            "a GraphQL block description is one lossless token"
+        );
+        assert_eq!(
+            graphql_tokens
+                .iter()
+                .filter(|token| token.kind == TokenKind::LineComment)
+                .count(),
+            1,
+            "only the hash outside the block description is a comment"
+        );
+
+        let protobuf = concat!(
+            "syntax = \"proto3\";\n",
+            "/* contract */ service Stream { // rpc\n",
+            "  rpc Watch(stream Request) returns (stream Response);\n",
+            "}\n",
+        );
+        assert_round_trip(protobuf, Language::Protobuf);
+        let protobuf_tokens = tokenize(protobuf, Language::Protobuf);
+        assert!(
+            protobuf_tokens
+                .iter()
+                .any(|token| token.kind == TokenKind::BlockComment)
+        );
+        assert!(
+            protobuf_tokens
+                .iter()
+                .any(|token| token.kind == TokenKind::LineComment)
         );
     }
 
