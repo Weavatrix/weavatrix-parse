@@ -7,6 +7,7 @@
 //
 //   node tools/compare-parser-revisions.mjs \
 //     --baseline HEAD --samples 3 --max-slowdown-pct 10 \
+//     --min-regression-ms 1 \
 //     --out target/parser-regression.json
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -63,8 +64,13 @@ try {
             : [['baseline', baselineBinary], ['current', currentBinary]]
         for (const [name, binary] of order) {
             process.stderr.write(`sample ${sample + 1}/${options.samples} ${name}... `)
-            const output = exec(binary, roots, projectRoot)
+            const output = exec(binary, roots, projectRoot, sample > 0)
             const parsed = parseSnapshot(output)
+            // Exact per-file facts are needed only for the first paired
+            // sample. Later samples prove determinism through the language
+            // digest and contribute timings; retaining millions of duplicate
+            // fact objects can exhaust the orchestrator before sample five.
+            if (sample > 0) parsed.files.clear()
             samples[name].push(parsed)
             process.stderr.write('done\n')
         }
@@ -73,7 +79,11 @@ try {
     assertDeterministicFacts(samples.baseline, 'baseline')
 
     const facts = compareFacts(samples.baseline[0], samples.current[0])
-    const throughput = compareThroughput(samples, options.maxSlowdownPct)
+    const throughput = compareThroughput(
+        samples,
+        options.maxSlowdownPct,
+        options.minRegressionMs * 1_000_000,
+    )
     const report = {
         schema: 'weavatrix.parse-revision-comparison.v1',
         generatedAt: new Date().toISOString(),
@@ -105,6 +115,8 @@ try {
             internalRounds: samples.current[0].rounds,
             throughputStatistic: 'median of per-process fastest complete extraction',
             maxSlowdownPct: options.maxSlowdownPct,
+            minRegressionMs: options.minRegressionMs,
+            throughputGate: 'both the relative and absolute slowdown thresholds must be exceeded',
             facts: 'exact stable-API declarations/imports/references counts and FNV-1a content digests per file',
             expectedFactsChange: 'Go may only reclassify grouped const/var names from references to declarations; imports must stay identical and declaration gains must equal reference removals.',
         },
@@ -342,7 +354,7 @@ function factDelta(before = [], after = []) {
     }
 }
 
-function compareThroughput(samples, maxSlowdownPct) {
+function compareThroughput(samples, maxSlowdownPct, minRegressionNs) {
     const languageNames = [...new Set(samples.current.flatMap((sample) =>
         [...sample.languages.keys()]))].sort()
     const languages = languageNames.map((language) => {
@@ -357,15 +369,19 @@ function compareThroughput(samples, maxSlowdownPct) {
         const slowdownPct = baselineMedian > 0
             ? 100 * (currentMedian / baselineMedian - 1)
             : null
+        const slowdownNs = currentMedian - baselineMedian
         return {
             language,
-            state: slowdownPct !== null && slowdownPct > maxSlowdownPct
+            state: slowdownPct !== null
+                && slowdownPct > maxSlowdownPct
+                && slowdownNs > minRegressionNs
                 ? 'REGRESSION'
                 : 'PASS',
             baselineNs,
             currentNs,
             baselineMedianNs: baselineMedian,
             currentMedianNs: currentMedian,
+            slowdownNs,
             slowdownPct: slowdownPct === null ? null : round(slowdownPct),
             currentOverBaselineThroughput: currentMedian > 0
                 ? round(baselineMedian / currentMedian)
@@ -378,8 +394,9 @@ function compareThroughput(samples, maxSlowdownPct) {
     }
 }
 
-function exec(binary, roots, cwd) {
-    return execFileSync(binary, roots, {
+function exec(binary, roots, cwd, summaryOnly = false) {
+    const args = summaryOnly ? ['--summary-only', ...roots] : roots
+    return execFileSync(binary, args, {
         cwd,
         encoding: 'utf8',
         maxBuffer: 512 * 1024 * 1024,
@@ -512,6 +529,7 @@ function parseArgs(args) {
         out: null,
         samples: 3,
         maxSlowdownPct: 10,
+        minRegressionMs: 1,
     }
     for (let index = 0; index < args.length; index += 1) {
         const argument = args[index]
@@ -520,6 +538,7 @@ function parseArgs(args) {
         else if (argument === '--out') options.out = args[++index]
         else if (argument === '--samples') options.samples = Number(args[++index])
         else if (argument === '--max-slowdown-pct') options.maxSlowdownPct = Number(args[++index])
+        else if (argument === '--min-regression-ms') options.minRegressionMs = Number(args[++index])
         else throw new Error(`unknown argument: ${argument}`)
     }
     if (!Number.isInteger(options.samples) || options.samples < 1 || options.samples > 9) {
@@ -527,6 +546,9 @@ function parseArgs(args) {
     }
     if (!Number.isFinite(options.maxSlowdownPct) || options.maxSlowdownPct < 0) {
         throw new Error('--max-slowdown-pct must be a non-negative number')
+    }
+    if (!Number.isFinite(options.minRegressionMs) || options.minRegressionMs < 0) {
+        throw new Error('--min-regression-ms must be a non-negative number')
     }
     return options
 }

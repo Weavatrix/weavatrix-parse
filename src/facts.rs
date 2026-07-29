@@ -109,6 +109,7 @@ pub enum DeclarationKind {
 
 /// A named declaration and where it was written.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Declaration {
     pub name: String,
     pub kind: DeclarationKind,
@@ -197,6 +198,12 @@ pub struct Reference {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Facts {
     pub declarations: Vec<Declaration>,
+    /// Exact spans of declarations that exist only in a test compilation.
+    ///
+    /// Keeping this sparse avoids enlarging every declaration in every
+    /// language. Rust fills it from `#[test]` and positive `#[cfg(test)]`
+    /// contexts; languages without compile-time test scopes leave it empty.
+    pub test_only_declarations: Vec<Span>,
     pub imports: Vec<Import>,
     pub references: Vec<Reference>,
     pub contracts: Vec<Contract>,
@@ -204,6 +211,12 @@ pub struct Facts {
 }
 
 impl Facts {
+    /// Whether the declaration at `span` only exists in a test compilation.
+    #[must_use]
+    pub fn declaration_is_test_only(&self, span: Span) -> bool {
+        self.test_only_declarations.contains(&span)
+    }
+
     /// Just the call sites, for consumers that want a call graph and nothing
     /// else.
     pub fn calls(&self) -> impl Iterator<Item = &Reference> {

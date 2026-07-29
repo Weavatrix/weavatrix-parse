@@ -59,6 +59,16 @@ contracts with byte spans — covers the following languages and formats:
 
 YAML is tokenized but has no structural model yet.
 
+`Facts::test_only_declarations` carries the exact spans of Rust declarations
+that exist only in a test compilation. It is derived from syntax, not from a
+filename: `#[test]`, async test attributes and positive `#[cfg(test)]`
+expressions mark the declaration, and an inline `#[cfg(test)] mod tests`
+passes that classification to everything nested inside it.
+`#[cfg(not(test))]` remains production code. The sparse index keeps the common
+declaration shape unchanged for every language while allowing consumers to
+exclude test helpers from dead-code and architecture review without hiding
+ordinary declarations that happen to share a file with tests.
+
 ## What this crate does not decide
 
 It extracts what the source says, not what a framework means by it.
@@ -109,17 +119,17 @@ and caveats are in [docs/comparison.md](docs/comparison.md).
 
 | language | files | MiB | tokenize | extract | ts parse + walk | ratio | interpretation |
 |---|---:|---:|---:|---:|---:|---:|---|
-| JavaScript | 720 | 8.0 | 129.4 MB/s | 58.6 MB/s | 6.3 MB/s | 9.31x | measured corpus |
-| TypeScript | 1789 | 8.0 | 100.3 | 38.5 | 3.6 | 10.68x | measured corpus |
-| Python | 1036 | 7.6 | 174.2 | 112.4 | 12.3 | 9.12x | measured corpus |
-| Rust | 838 | 5.1 | 95.9 | 42.0 | 4.9 | 8.49x | measured corpus |
-| Java | 389 | 2.4 | 107.0 | 49.7 | 7.3 | 6.77x | measured corpus |
-| XML | 20 | 5.3 | 95.7 | 34.8 | 2.2 | 15.70x | byte-heavy, only 20 files |
-| Go | 40 | 0.2 | 105.4 | 56.5 | 5.3 | 10.58x | small corpus; no speed claim |
-| C | 23 | 0.2 | 114.4 | 56.7 | 4.0 | 14.21x | small corpus; no speed claim |
-| C++ | 3 | <0.1 | 85.7 | 36.6 | 2.3 | 15.99x | small corpus; no speed claim |
-| SQL | 4 | <0.1 | 103.3 | 56.1 | 5.2 | 10.80x | small corpus; no speed claim |
-| Bash | 33 | <0.1 | 165.5 | 75.1 | 7.4 | 10.19x | small corpus; no speed claim |
+| JavaScript | 718 | 8.0 | 126.0 MB/s | 54.6 MB/s | 7.1 MB/s | 7.66x | measured corpus |
+| TypeScript | 1788 | 8.0 | 84.1 | 32.0 | 2.8 | 11.31x | measured corpus |
+| Python | 1036 | 7.6 | 122.4 | 84.2 | 7.7 | 10.99x | measured corpus |
+| Rust | 839 | 5.3 | 69.8 | 31.7 | 3.6 | 8.83x | measured corpus |
+| Java | 389 | 2.4 | 83.1 | 39.3 | 5.3 | 7.40x | measured corpus |
+| XML | 20 | 5.3 | 78.2 | 29.3 | 1.7 | 17.38x | byte-heavy, only 20 files |
+| Go | 40 | 0.2 | 71.7 | 33.2 | 3.3 | 9.94x | small corpus; no speed claim |
+| C | 23 | 0.2 | 81.7 | 36.3 | 2.7 | 13.68x | small corpus; no speed claim |
+| C++ | 3 | <0.1 | 63.1 | 25.5 | 1.5 | 16.99x | small corpus; no speed claim |
+| SQL | 4 | <0.1 | 65.3 | 37.8 | 2.9 | 12.96x | small corpus; no speed claim |
+| Bash | 33 | <0.1 | 118.3 | 52.0 | 4.9 | 10.62x | small corpus; no speed claim |
 
 GraphQL, protobuf, C#, Swift and Terraform had no files in this selected corpus,
 so there is no throughput result for them. GraphQL and protobuf correctness is
@@ -127,10 +137,10 @@ instead covered by exact typed fixtures. Protobuf accepts proto2, proto3, and
 Editions 2023/2024 (including Edition 2024 `import option`) while preserving
 every byte and extracting typed package/message/enum/service/RPC facts. The
 measured code-language range is
-currently 6.77x to 10.68x, not 30x; a 30x target remains unfulfilled.
+currently 7.40x to 11.31x, not 30x; a 30x target remains unfulfilled.
 The machine-readable table is checked in as
 `benchmark-results/competitor-median-2026-07-29.txt` (SHA-256
-`8C25F0BD16EC8A458B0ACEADF9D26D6E9E7AB0F6AD3CE6329870AD66E993CCCD`).
+`531F03368D07881E4227FDC22A779B724795DF3E117754AAC00B3F32A6187FC0`).
 
 Markdown is the one exception to the second rule, and it is not a result to be
 proud of: prose has no token structure, so the document extractor reads lines
@@ -143,12 +153,12 @@ marks them with a dedicated node type.
 
 | language | tree-sitter | ours | missed | agreement |
 |---|---|---|---|---|
-| javascript | 2872 | 3081 | 0 | 100.0% |
-| typescript | 9579 | 9758 | 0 | 100.0% |
+| javascript | 2861 | 3076 | 0 | 100.0% |
+| typescript | 9575 | 9754 | 0 | 100.0% |
 | python | 5668 | 5671 | 0 | 100.0% |
-| rust | 3942 | 3943 | 0 | 100.0% |
+| rust | 3964 | 3965 | 0 | 100.0% |
 | go | 277 | 277 | 0 | 100.0% |
-| java | 4586 | 4586 | 0 | 100.0% |
+| java | 4576 | 4576 | 0 | 100.0% |
 
 This proves zero misses against tree-sitter's dedicated import nodes on this
 corpus. It does not by itself prove that every surplus fact is correct:

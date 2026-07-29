@@ -22,6 +22,7 @@ pub fn extract(source: &str, language: Language) -> Facts {
     let mut state = Extractor {
         source,
         tokens: &tokens,
+        language,
         rules: Rules::of(language),
         facts: Facts::default(),
         scopes: Vec::new(),
@@ -220,11 +221,13 @@ struct Scope {
     name: String,
     depth: Option<i32>,
     type_body: bool,
+    test_only: bool,
 }
 
 struct Extractor<'source, 'tokens> {
     source: &'source str,
     tokens: &'tokens [Token],
+    language: Language,
     rules: Rules,
     facts: Facts,
     scopes: Vec<Scope>,
@@ -270,6 +273,113 @@ impl Extractor<'_, '_> {
 
     fn owner(&self) -> Option<String> {
         self.scopes.last().map(|scope| scope.name.clone())
+    }
+
+    fn test_only_at(&self, index: usize) -> bool {
+        if self.language != Language::Rust {
+            return false;
+        }
+        self.scopes.last().is_some_and(|scope| scope.test_only)
+            || self.rust_test_attribute_before(index)
+    }
+
+    fn record_test_only_declaration(&mut self, test_only: bool, span: Span) {
+        if test_only {
+            self.facts.test_only_declarations.push(span);
+        }
+    }
+
+    /// Reads only the contiguous Rust attributes immediately before an item.
+    ///
+    /// The lossless tokenizer has already removed comments and strings from
+    /// syntax consideration, so a quoted `#[cfg(test)]` cannot classify code.
+    fn rust_test_attribute_before(&self, index: usize) -> bool {
+        let mut cursor = index;
+        while cursor > 0 && self.punct(cursor - 1, "]") {
+            let end = cursor - 1;
+            let mut start = end;
+            let mut depth = 1_i32;
+            while start > 0 {
+                start -= 1;
+                if self.punct(start, "]") {
+                    depth += 1;
+                } else if self.punct(start, "[") {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+            }
+            if depth != 0 || start == 0 || !self.punct(start - 1, "#") {
+                break;
+            }
+            if self.rust_attribute_is_test(start + 1, end) {
+                return true;
+            }
+            cursor = start - 1;
+        }
+        false
+    }
+
+    fn rust_attribute_is_test(&self, start: usize, end: usize) -> bool {
+        let Some(first) =
+            (start..end).find(|&index| self.kind(index) == Some(TokenKind::Identifier))
+        else {
+            return false;
+        };
+        if self.text(first) == "cfg" {
+            let Some(open) = (first + 1..end).find(|&index| self.punct(index, "(")) else {
+                return false;
+            };
+            return self.cfg_has_positive_test(open + 1, end, false);
+        }
+        let path_end = (first..end)
+            .find(|&index| self.punct(index, "("))
+            .unwrap_or(end);
+        (first..path_end)
+            .rfind(|&index| self.kind(index) == Some(TokenKind::Identifier))
+            .is_some_and(|index| {
+                matches!(
+                    self.text(index),
+                    "test" | "rstest" | "proptest" | "wasm_bindgen_test" | "test_case"
+                )
+            })
+    }
+
+    fn cfg_has_positive_test(&self, start: usize, end: usize, negated: bool) -> bool {
+        let mut cursor = start;
+        while cursor < end {
+            if self.kind(cursor) == Some(TokenKind::Identifier) {
+                if self.text(cursor) == "not" && self.punct(cursor + 1, "(") {
+                    let close = self.matching_paren(cursor + 1, end);
+                    if self.cfg_has_positive_test(cursor + 2, close, !negated) {
+                        return true;
+                    }
+                    cursor = close.saturating_add(1);
+                    continue;
+                }
+                if self.text(cursor) == "test" && !negated {
+                    return true;
+                }
+            }
+            cursor += 1;
+        }
+        false
+    }
+
+    fn matching_paren(&self, open: usize, end: usize) -> usize {
+        let mut depth = 0_i32;
+        for cursor in open..end {
+            if self.punct(cursor, "(") {
+                depth += 1;
+            } else if self.punct(cursor, ")") {
+                depth -= 1;
+                if depth == 0 {
+                    return cursor;
+                }
+            }
+        }
+        end
     }
 
     fn close_scopes(&mut self) {
@@ -630,11 +740,14 @@ impl Extractor<'_, '_> {
         let name = self.text(name_index).to_owned();
         // Go marks export by an initial capital rather than a keyword.
         let exported = exported || name.starts_with(char::is_uppercase);
+        let test_only = self.test_only_at(index);
+        let declaration_span = self.span(index, name_index);
         self.drop_waiting();
+        self.record_test_only_declaration(test_only, declaration_span);
         self.facts.declarations.push(Declaration {
             name: name.clone(),
             kind: *kind,
-            span: self.span(index, name_index),
+            span: declaration_span,
             owner: self.owner(),
             exported,
         });
@@ -650,6 +763,7 @@ impl Extractor<'_, '_> {
                     | DeclarationKind::Trait
                     | DeclarationKind::Enum
             ),
+            test_only,
         });
         Some(name_index + 1)
     }
@@ -718,10 +832,13 @@ impl Extractor<'_, '_> {
         if at == index {
             return None;
         }
+        let declaration_span = self.span(index, at);
+        let test_only = self.test_only_at(index);
+        self.record_test_only_declaration(test_only, declaration_span);
         self.facts.declarations.push(Declaration {
             name,
             kind: DeclarationKind::Field,
-            span: self.span(index, at),
+            span: declaration_span,
             owner: self.owner(),
             exported,
         });
@@ -804,10 +921,13 @@ impl Extractor<'_, '_> {
                 line = self.tokens[cursor].line;
                 let name = self.text(cursor).to_owned();
                 let exported = name.starts_with(char::is_uppercase);
+                let declaration_span = self.span(cursor, cursor);
+                let test_only = self.test_only_at(cursor);
+                self.record_test_only_declaration(test_only, declaration_span);
                 self.facts.declarations.push(Declaration {
                     name,
                     kind,
-                    span: self.span(cursor, cursor),
+                    span: declaration_span,
                     owner: self.owner(),
                     exported,
                 });
@@ -863,10 +983,12 @@ impl Extractor<'_, '_> {
         if !self.punct(cursor, "{") {
             return None;
         }
+        let test_only = self.test_only_at(keyword);
         self.scopes.push(Scope {
             name,
             depth: None,
             type_body: true,
+            test_only,
         });
         Some(cursor)
     }
@@ -930,6 +1052,9 @@ impl Extractor<'_, '_> {
             return None;
         }
         let name = name.to_owned();
+        let test_only = self.test_only_at(index);
+        let declaration_span = self.span(index, index);
+        self.record_test_only_declaration(test_only, declaration_span);
         self.facts.declarations.push(Declaration {
             name: name.clone(),
             kind: if owner.is_some() {
@@ -937,7 +1062,7 @@ impl Extractor<'_, '_> {
             } else {
                 DeclarationKind::Function
             },
-            span: self.span(index, index),
+            span: declaration_span,
             owner,
             // C has no visibility keyword; a static function is file-local and
             // everything else is linkable.
@@ -947,6 +1072,7 @@ impl Extractor<'_, '_> {
             name,
             depth: None,
             type_body: false,
+            test_only,
         });
         Some(index + 1)
     }
@@ -1041,10 +1167,13 @@ impl Extractor<'_, '_> {
         if matches!(name.as_str(), "if" | "for" | "while" | "switch" | "return") {
             return None;
         }
+        let test_only = self.test_only_at(index);
+        let declaration_span = self.span(index, cursor);
+        self.record_test_only_declaration(test_only, declaration_span);
         self.facts.declarations.push(Declaration {
             name: name.clone(),
             kind: DeclarationKind::Method,
-            span: self.span(index, cursor),
+            span: declaration_span,
             owner: self.owner(),
             exported,
         });
@@ -1052,6 +1181,7 @@ impl Extractor<'_, '_> {
             name,
             depth: None,
             type_body: false,
+            test_only,
         });
         Some(cursor + 1)
     }
@@ -1145,6 +1275,49 @@ mod tests {
             ["self::engine", "self::helper", "crate::engine::Driver"],
             "a mod with a body defines the module here rather than including a file"
         );
+    }
+
+    #[test]
+    fn rust_test_attributes_classify_the_declaration_and_nested_scope() {
+        let source = r#"
+            fn production() {}
+            #[cfg(not(test))]
+            fn production_without_tests() {}
+            #[cfg(any(test, feature = "test-support"))]
+            #[allow(dead_code)]
+            mod tests {
+                #[test]
+                fn embedded_test() {}
+                fn helper_for_test() {}
+            }
+            #[tokio::test]
+            async fn async_test() {}
+            #[cfg(not(not(test)))]
+            fn double_negated_test() {}
+        "#;
+        let facts = extract(source, Language::Rust);
+        let test_only = |name: &str| {
+            facts
+                .declarations
+                .iter()
+                .find(|declaration| declaration.name == name)
+                .is_some_and(|declaration| facts.declaration_is_test_only(declaration.span))
+        };
+        for production in ["production", "production_without_tests"] {
+            assert!(
+                !test_only(production),
+                "{production} is available to production"
+            );
+        }
+        for test in [
+            "tests",
+            "embedded_test",
+            "helper_for_test",
+            "async_test",
+            "double_negated_test",
+        ] {
+            assert!(test_only(test), "{test} is test-only syntax");
+        }
     }
 
     #[test]

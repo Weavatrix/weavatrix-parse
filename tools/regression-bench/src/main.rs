@@ -36,7 +36,18 @@ const LANGUAGES: &[Language] = &[
 ];
 
 fn main() {
-    let roots = env::args().skip(1).map(PathBuf::from).collect::<Vec<_>>();
+    let mut summary_only = false;
+    let roots = env::args()
+        .skip(1)
+        .filter_map(|argument| {
+            if argument == "--summary-only" {
+                summary_only = true;
+                None
+            } else {
+                Some(PathBuf::from(argument))
+            }
+        })
+        .collect::<Vec<_>>();
     if roots.is_empty() {
         eprintln!("usage: weavatrix-parse-regression-bench <corpus-dir>...");
         std::process::exit(2);
@@ -62,58 +73,23 @@ fn main() {
             references += facts.references.len();
             let mut hash = StableHash::new();
             hash.write(entry.identity.as_bytes());
-            hash.write(format!("{:?}", facts.declarations).as_bytes());
+            write_stable_declarations(&mut hash, &facts.declarations);
             hash.write(format!("{:?}", facts.imports).as_bytes());
             hash.write(format!("{:?}", facts.references).as_bytes());
             language_hash.write(entry.identity.as_bytes());
             language_hash.write_u64(hash.finish());
-            println!(
-                "F\t{}\t{}\t{}\t{}\t{}\t{}\t{:016x}",
-                language.as_str(),
-                escape(&entry.identity),
-                entry.source.len(),
-                facts.declarations.len(),
-                facts.imports.len(),
-                facts.references.len(),
-                hash.finish()
-            );
-            for declaration in &facts.declarations {
+            if !summary_only {
                 println!(
-                    "D\t{}\t{}\t{}\t{:?}\t{}\t{}\t{}\t{}",
+                    "F\t{}\t{}\t{}\t{}\t{}\t{}\t{:016x}",
                     language.as_str(),
                     escape(&entry.identity),
-                    escape(&declaration.name),
-                    declaration.kind,
-                    declaration.span.start,
-                    declaration.span.end,
-                    declaration.span.line,
-                    escape(declaration.owner.as_deref().unwrap_or(""))
+                    entry.source.len(),
+                    facts.declarations.len(),
+                    facts.imports.len(),
+                    facts.references.len(),
+                    hash.finish()
                 );
-            }
-            for import in &facts.imports {
-                println!(
-                    "I\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                    language.as_str(),
-                    escape(&entry.identity),
-                    escape(&import.specifier),
-                    import.reexport,
-                    import.span.start,
-                    import.span.end,
-                    import.span.line
-                );
-            }
-            for reference in &facts.references {
-                println!(
-                    "R\t{}\t{}\t{}\t{:?}\t{}\t{}\t{}\t{}",
-                    language.as_str(),
-                    escape(&entry.identity),
-                    escape(&reference.name),
-                    reference.kind,
-                    reference.span.start,
-                    reference.span.end,
-                    reference.span.line,
-                    escape(reference.owner.as_deref().unwrap_or(""))
-                );
+                print_exact_facts(*language, entry, &facts);
             }
         }
 
@@ -140,6 +116,77 @@ fn main() {
             language_hash.finish(),
             elapsed.as_nanos()
         );
+    }
+}
+
+fn print_exact_facts(language: Language, entry: &Entry, facts: &weavatrix_parse::Facts) {
+    for declaration in &facts.declarations {
+        println!(
+            "D\t{}\t{}\t{}\t{:?}\t{}\t{}\t{}\t{}",
+            language.as_str(),
+            escape(&entry.identity),
+            escape(&declaration.name),
+            declaration.kind,
+            declaration.span.start,
+            declaration.span.end,
+            declaration.span.line,
+            escape(declaration.owner.as_deref().unwrap_or(""))
+        );
+    }
+    for import in &facts.imports {
+        println!(
+            "I\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            language.as_str(),
+            escape(&entry.identity),
+            escape(&import.specifier),
+            import.reexport,
+            import.span.start,
+            import.span.end,
+            import.span.line
+        );
+    }
+    for reference in &facts.references {
+        println!(
+            "R\t{}\t{}\t{}\t{:?}\t{}\t{}\t{}\t{}",
+            language.as_str(),
+            escape(&entry.identity),
+            escape(&reference.name),
+            reference.kind,
+            reference.span.start,
+            reference.span.end,
+            reference.span.line,
+            escape(reference.owner.as_deref().unwrap_or(""))
+        );
+    }
+}
+
+/// Hashes only the declaration fields that existed in the baseline API.
+///
+/// The current benchmark harness is compiled against both parser revisions.
+/// New additive metadata such as `Declaration::test_only` must not make every
+/// unchanged declaration look like a semantic regression merely because the
+/// derived `Debug` representation gained a field.
+fn write_stable_declarations(
+    hash: &mut StableHash,
+    declarations: &[weavatrix_parse::Declaration],
+) {
+    for declaration in declarations {
+        hash.write(declaration.name.as_bytes());
+        hash.write(b"\0");
+        hash.write(format!("{:?}", declaration.kind).as_bytes());
+        hash.write(b"\0");
+        hash.write(declaration.span.start.to_string().as_bytes());
+        hash.write(b"\0");
+        hash.write(declaration.span.end.to_string().as_bytes());
+        hash.write(b"\0");
+        hash.write(declaration.span.line.to_string().as_bytes());
+        hash.write(b"\0");
+        hash.write(declaration.span.column.to_string().as_bytes());
+        hash.write(b"\0");
+        hash.write(declaration.owner.as_deref().unwrap_or("").as_bytes());
+        hash.write(b"\0");
+        hash.write(if declaration.exported { b"1" } else { b"0" });
+        hash.write(b"\n");
     }
 }
 
