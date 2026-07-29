@@ -1,4 +1,4 @@
-//! Lossless proto3 package, message, service, and RPC contract facts.
+//! Lossless protobuf package, message, service, and RPC contract facts.
 
 use crate::contract_tokens::ContractTokens;
 use crate::{Contract, ContractKind, Facts, Import, Language, ParseDiagnostic, Span, TokenKind};
@@ -30,11 +30,11 @@ impl<'source> Parser<'source> {
             self.facts.diagnostics.push(error);
             return self.facts;
         }
-        if !self.is_proto3() {
+        if self.dialect().is_none() {
             return self.fail(
                 0,
-                "protobuf.unsupported_dialect",
-                "only an explicit proto3 syntax declaration is supported",
+                "protobuf.invalid_dialect",
+                "expected syntax = \"proto2\", syntax = \"proto3\", or a numeric edition declaration",
             );
         }
         let mut index = 0;
@@ -69,17 +69,29 @@ impl<'source> Parser<'source> {
         self.tokens.text(index)
     }
 
-    fn is_proto3(&self) -> bool {
-        (0..self.tokens.len()).any(|index| {
-            self.text(index) == "syntax"
+    fn dialect(&self) -> Option<&str> {
+        let declaration = self.text(0);
+        let value = self
+            .tokens
+            .get(2)
+            .filter(|token| token.kind == TokenKind::String)
+            .map(|_| self.text(2).trim_matches(['"', '\'']))?;
+        let recognized = self.text(1) == "="
+            && self.text(3) == ";"
+            && (matches!((declaration, value), ("syntax", "proto2" | "proto3"))
+                || (declaration == "edition"
+                    && value.len() == 4
+                    && value.bytes().all(|byte| byte.is_ascii_digit())));
+        let duplicate = (4..self.tokens.len()).any(|index| {
+            matches!(self.text(index), "syntax" | "edition")
                 && self.text(index + 1) == "="
                 && self
                     .tokens
                     .get(index + 2)
                     .is_some_and(|token| token.kind == TokenKind::String)
-                && self.text(index + 2).trim_matches(['"', '\'']) == "proto3"
                 && self.text(index + 3) == ";"
-        })
+        });
+        (recognized && !duplicate).then_some(value)
     }
 
     fn parse_package(&mut self, keyword: usize) -> Option<usize> {
@@ -327,9 +339,42 @@ mod tests {
     }
 
     #[test]
-    fn proto2_and_malformed_proto3_fail_closed() {
+    fn extracts_proto2_and_numeric_edition_service_contracts() {
         for source in [
-            "syntax = \"proto2\"; message Legacy {}",
+            concat!(
+                "syntax = \"proto2\";\n",
+                "message Request { optional string id = 1; }\n",
+                "message Reply {}\n",
+                "service Legacy { rpc Get(Request) returns (Reply); }\n",
+            ),
+            concat!(
+                "edition = \"2023\";\n",
+                "message Request { string id = 1; }\n",
+                "message Reply {}\n",
+                "service EditionApi { rpc Get(Request) returns (Reply); }\n",
+            ),
+            concat!(
+                "edition = \"2024\";\n",
+                "message Request { string id = 1; }\n",
+                "message Reply {}\n",
+                "service FutureEditionApi { rpc Get(Request) returns (Reply); }\n",
+            ),
+        ] {
+            let facts = extract(source);
+            assert!(facts.diagnostics.is_empty(), "{facts:?}");
+            assert!(facts.contracts.iter().any(|fact| {
+                matches!(fact.kind, ContractKind::ProtobufRpc { .. }) && fact.name == "Get"
+            }));
+        }
+    }
+
+    #[test]
+    fn invalid_and_malformed_dialects_fail_closed() {
+        for source in [
+            "syntax = \"proto1\"; message Legacy {}",
+            "edition = \"future\"; message Legacy {}",
+            "package misplaced; syntax = \"proto3\"; message Legacy {}",
+            "syntax = \"proto3\"; edition = \"2023\"; message Legacy {}",
             "syntax = \"proto3\"; service Broken {",
             "syntax = \"proto3\"; package bad message X {};",
             "syntax = \"proto3\"; service Bad { rpc Call(Request) (Reply); }",

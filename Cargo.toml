@@ -1,6 +1,6 @@
 [package]
 name = "weavatrix-parse"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 # Let-chains, which the tokenizer and extractors use, are stable from 1.88 on
 # edition 2024 - not from 1.85, where the edition itself landed.
