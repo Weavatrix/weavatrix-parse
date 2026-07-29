@@ -34,7 +34,7 @@ impl<'source> Parser<'source> {
             return self.fail(
                 0,
                 "protobuf.invalid_dialect",
-                "expected syntax = \"proto2\", syntax = \"proto3\", or a numeric edition declaration",
+                "expected syntax = \"proto2\", syntax = \"proto3\", edition = \"2023\", or edition = \"2024\"",
             );
         }
         let mut index = 0;
@@ -78,10 +78,10 @@ impl<'source> Parser<'source> {
             .map(|_| self.text(2).trim_matches(['"', '\'']))?;
         let recognized = self.text(1) == "="
             && self.text(3) == ";"
-            && (matches!((declaration, value), ("syntax", "proto2" | "proto3"))
-                || (declaration == "edition"
-                    && value.len() == 4
-                    && value.bytes().all(|byte| byte.is_ascii_digit())));
+            && matches!(
+                (declaration, value),
+                ("syntax", "proto2" | "proto3") | ("edition", "2023" | "2024")
+            );
         let duplicate = (4..self.tokens.len()).any(|index| {
             matches!(self.text(index), "syntax" | "edition")
                 && self.text(index + 1) == "="
@@ -122,7 +122,7 @@ impl<'source> Parser<'source> {
 
     fn parse_import(&mut self, keyword: usize) -> Option<usize> {
         let path = keyword
-            + if matches!(self.text(keyword + 1), "public" | "weak") {
+            + if matches!(self.text(keyword + 1), "public" | "weak" | "option") {
                 2
             } else {
                 1
@@ -339,25 +339,35 @@ mod tests {
     }
 
     #[test]
-    fn extracts_proto2_and_numeric_edition_service_contracts() {
-        for source in [
-            concat!(
-                "syntax = \"proto2\";\n",
-                "message Request { optional string id = 1; }\n",
-                "message Reply {}\n",
-                "service Legacy { rpc Get(Request) returns (Reply); }\n",
+    fn extracts_proto2_and_supported_editions_service_contracts() {
+        for (source, option_import) in [
+            (
+                concat!(
+                    "syntax = \"proto2\";\n",
+                    "message Request { optional string id = 1; }\n",
+                    "message Reply {}\n",
+                    "service Legacy { rpc Get(Request) returns (Reply); }\n",
+                ),
+                None,
             ),
-            concat!(
-                "edition = \"2023\";\n",
-                "message Request { string id = 1; }\n",
-                "message Reply {}\n",
-                "service EditionApi { rpc Get(Request) returns (Reply); }\n",
+            (
+                concat!(
+                    "edition = \"2023\";\n",
+                    "message Request { string id = 1; }\n",
+                    "message Reply {}\n",
+                    "service EditionApi { rpc Get(Request) returns (Reply); }\n",
+                ),
+                None,
             ),
-            concat!(
-                "edition = \"2024\";\n",
-                "message Request { string id = 1; }\n",
-                "message Reply {}\n",
-                "service FutureEditionApi { rpc Get(Request) returns (Reply); }\n",
+            (
+                concat!(
+                    "edition = \"2024\";\n",
+                    "import option \"custom_options.proto\";\n",
+                    "message Request { string id = 1; }\n",
+                    "message Reply {}\n",
+                    "service EditionApi { rpc Get(Request) returns (Reply); }\n",
+                ),
+                Some("custom_options.proto"),
             ),
         ] {
             let facts = extract(source);
@@ -365,16 +375,44 @@ mod tests {
             assert!(facts.contracts.iter().any(|fact| {
                 matches!(fact.kind, ContractKind::ProtobufRpc { .. }) && fact.name == "Get"
             }));
+            if let Some(option_import) = option_import {
+                let import = facts
+                    .imports
+                    .iter()
+                    .find(|import| import.specifier == option_import)
+                    .expect("Edition 2024 option import");
+                assert!(!import.reexport);
+                assert_eq!(
+                    source[import.span.start..import.span.end].trim_matches(['"', '\'']),
+                    option_import
+                );
+            }
         }
     }
 
     #[test]
-    fn invalid_and_malformed_dialects_fail_closed() {
+    fn invalid_dialects_fail_closed_with_exact_diagnostics() {
         for source in [
             "syntax = \"proto1\"; message Legacy {}",
             "edition = \"future\"; message Legacy {}",
+            "edition = \"2022\"; message Legacy {}",
+            "edition = \"2026\"; message Legacy {}",
             "package misplaced; syntax = \"proto3\"; message Legacy {}",
             "syntax = \"proto3\"; edition = \"2023\"; message Legacy {}",
+        ] {
+            let facts = extract(source);
+            assert!(facts.contracts.is_empty());
+            assert_eq!(facts.diagnostics.len(), 1);
+            assert_eq!(facts.diagnostics[0].code, "protobuf.invalid_dialect");
+            let span = facts.diagnostics[0].span;
+            assert_eq!((span.line, span.column), (1, 1));
+            assert!(!source[span.start..span.end].is_empty());
+        }
+    }
+
+    #[test]
+    fn malformed_supported_dialects_fail_closed() {
+        for source in [
             "syntax = \"proto3\"; service Broken {",
             "syntax = \"proto3\"; package bad message X {};",
             "syntax = \"proto3\"; service Bad { rpc Call(Request) (Reply); }",
@@ -382,6 +420,7 @@ mod tests {
             let facts = extract(source);
             assert!(facts.contracts.is_empty());
             assert_eq!(facts.diagnostics.len(), 1);
+            assert_eq!(facts.diagnostics[0].code, "protobuf.syntax_error");
             let span = facts.diagnostics[0].span;
             assert!(
                 span.end > span.start,

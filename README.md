@@ -124,8 +124,9 @@ and caveats are in [docs/comparison.md](docs/comparison.md).
 GraphQL, protobuf, C#, Swift and Terraform had no files in this selected corpus,
 so there is no throughput result for them. GraphQL and protobuf correctness is
 instead covered by exact typed fixtures. Protobuf accepts proto2, proto3, and
-numeric Editions declarations while preserving every byte and extracting typed
-package/message/enum/service/RPC facts. The measured code-language range is
+Editions 2023/2024 (including Edition 2024 `import option`) while preserving
+every byte and extracting typed package/message/enum/service/RPC facts. The
+measured code-language range is
 currently 6.77x to 10.68x, not 30x; a 30x target remains unfulfilled.
 The machine-readable table is checked in as
 `benchmark-results/competitor-median-2026-07-29.txt` (SHA-256
