@@ -1,0 +1,84 @@
+{
+  "architectureContractV": 1,
+  "name": "Weavatrix Parse modular extraction pipeline",
+  "style": "ports-and-adapters",
+  "enforcement": "strict",
+  "components": [
+    {
+      "id": "model",
+      "name": "Structural fact model",
+      "paths": ["src/facts.rs"]
+    },
+    {
+      "id": "lexer",
+      "name": "Lossless token and syntax machinery",
+      "paths": ["src/syntax", "src/token", "src/contract_tokens.rs"]
+    },
+    {
+      "id": "extractors",
+      "name": "Language and format adapters",
+      "paths": [
+        "src/braced",
+        "src/docs",
+        "src/graphql",
+        "src/hcl",
+        "src/markup",
+        "src/protobuf",
+        "src/python",
+        "src/script",
+        "src/shell",
+        "src/sql",
+        "src/style"
+      ]
+    },
+    {
+      "id": "facade",
+      "name": "Public crate facade",
+      "paths": ["src/lib.rs"]
+    },
+    {
+      "id": "verification",
+      "name": "Tests and benchmarks",
+      "paths": ["tests", "benches", "tools"]
+    }
+  ],
+  "dependencyRules": [
+    {
+      "id": "model-is-inward",
+      "action": "forbid",
+      "from": ["model"],
+      "to": ["lexer", "extractors", "facade"],
+      "kinds": ["imports", "re_exports", "depends_on"]
+    },
+    {
+      "id": "lexer-does-not-own-language-extractors",
+      "action": "forbid",
+      "from": ["lexer"],
+      "to": ["extractors", "facade"],
+      "kinds": ["imports", "re_exports", "depends_on"]
+    },
+    {
+      "id": "extractors-do-not-depend-on-facade",
+      "action": "forbid",
+      "from": ["extractors"],
+      "to": ["facade"],
+      "kinds": ["imports", "re_exports", "depends_on"]
+    }
+  ],
+  "budgets": {
+    "runtimeCycles": 0,
+    "maxFileLoc": 300,
+    "maxFunctionLoc": 100
+  },
+  "technologies": {
+    "required": ["rust"],
+    "forbidden": ["unsafe-rust"]
+  },
+  "exceptions": [],
+  "ratchet": {
+    "baseline": {
+      "fingerprints": [],
+      "metrics": {}
+    }
+  }
+}

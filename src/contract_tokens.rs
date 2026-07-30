@@ -1,4 +1,6 @@
-use crate::{Language, ParseDiagnostic, Span, Token, tokenize};
+use crate::facts::{ParseDiagnostic, Span};
+use crate::syntax::Language;
+use crate::token::{Token, tokenize};
 use std::ops::Index;
 
 /// A lossless stream with a separate index for grammar-significant tokens.

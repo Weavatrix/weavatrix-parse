@@ -5,14 +5,16 @@
 //! once against the dirty/current checkout and once against an isolated Git
 //! worktree. That makes the comparison independent of benchmark-code changes.
 
-use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fmt::Write as _;
-use std::fs;
 use std::hint::black_box;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use weavatrix_parse::{Language, extract};
+
+mod corpus;
+
+use corpus::{Entry, collect};
 
 const CORPUS_LIMIT: usize = 8 * 1024 * 1024;
 const ROUNDS: usize = 5;
@@ -53,7 +55,7 @@ fn main() {
         std::process::exit(2);
     }
     println!("schema=weavatrix.parse-regression.v1 rounds={ROUNDS} cap={CORPUS_LIMIT}");
-    let corpora = collect(&roots);
+    let corpora = collect(&roots, LANGUAGES, CORPUS_LIMIT);
     for language in LANGUAGES {
         let Some(corpus) = corpora.get(language) else {
             continue;
@@ -166,10 +168,7 @@ fn print_exact_facts(language: Language, entry: &Entry, facts: &weavatrix_parse:
 /// New additive metadata such as `Declaration::test_only` must not make every
 /// unchanged declaration look like a semantic regression merely because the
 /// derived `Debug` representation gained a field.
-fn write_stable_declarations(
-    hash: &mut StableHash,
-    declarations: &[weavatrix_parse::Declaration],
-) {
+fn write_stable_declarations(hash: &mut StableHash, declarations: &[weavatrix_parse::Declaration]) {
     for declaration in declarations {
         hash.write(declaration.name.as_bytes());
         hash.write(b"\0");
@@ -198,90 +197,6 @@ fn extract_all(corpus: &[Entry], language: Language) -> usize {
             facts.declarations.len() + facts.imports.len() + facts.references.len()
         })
         .sum()
-}
-
-struct Entry {
-    identity: String,
-    source: String,
-}
-
-fn collect(roots: &[PathBuf]) -> HashMap<Language, Vec<Entry>> {
-    let allowed = LANGUAGES.iter().copied().collect::<HashSet<_>>();
-    let mut corpora = HashMap::new();
-    let mut totals = HashMap::new();
-    for (root_index, root) in roots.iter().enumerate() {
-        visit(root, root, root_index, &allowed, &mut corpora, &mut totals);
-    }
-    corpora
-}
-
-fn visit(
-    root: &Path,
-    path: &Path,
-    root_index: usize,
-    allowed: &HashSet<Language>,
-    corpora: &mut HashMap<Language, Vec<Entry>>,
-    totals: &mut HashMap<Language, usize>,
-) {
-    let Ok(entries) = fs::read_dir(path) else {
-        return;
-    };
-    let mut entries = entries.flatten().collect::<Vec<_>>();
-    entries.sort_unstable_by_key(|entry| entry.file_name());
-    for entry in entries {
-        if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
-            continue;
-        }
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if skip_directory(&name) {
-            continue;
-        }
-        if path.is_dir() {
-            visit(root, &path, root_index, allowed, corpora, totals);
-            continue;
-        }
-        let Some(language) = path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .and_then(Language::from_extension)
-        else {
-            continue;
-        };
-        if !allowed.contains(&language)
-            || totals.get(&language).copied().unwrap_or(0) >= CORPUS_LIMIT
-        {
-            continue;
-        }
-        if let Ok(source) = fs::read_to_string(&path) {
-            let relative = path.strip_prefix(root).unwrap_or(&path);
-            let identity = format!(
-                "{root_index}/{}",
-                relative.to_string_lossy().replace('\\', "/")
-            );
-            *totals.entry(language).or_default() += source.len();
-            corpora
-                .entry(language)
-                .or_default()
-                .push(Entry { identity, source });
-        }
-    }
-}
-
-fn skip_directory(name: &str) -> bool {
-    name.starts_with('.')
-        || matches!(
-            name,
-            "node_modules"
-                | "target"
-                | "dist"
-                | "build"
-                | "coverage"
-                | "out"
-                | "__pycache__"
-                | "venv"
-        )
 }
 
 fn escape(value: &str) -> String {

@@ -108,6 +108,34 @@ one of them costs a table rather than a scanner: Solidity was added for two
 tables and a test. A language with its own scoping model costs a module, as
 Python and SQL each have.
 
+## Enforced modular architecture
+
+The tokenizer is not a growing switch statement. The crate has explicit
+inward and outward layers:
+
+```text
+fact model
+    |
+lossless lexer
+  syntax profiles · token scanner · structural token index
+    |
+language adapters
+  braced · Python · SQL · GraphQL · Protobuf · HCL
+  markup · styles · documents · shell
+    |
+public facade
+```
+
+Each language directory uses one `foo/mod.rs` module form and is divided by
+grammar responsibility rather than arbitrary numbered chunks.
+`.weavatrix/architecture.json` verifies the dependency direction against the
+parser's own source graph.
+
+Release gates require zero runtime cycles, files no larger than 300 physical
+lines, functions no larger than 100 physical lines, no architecture
+exceptions, an empty baseline, strict Clippy, lossless round trips, exact fact
+fixtures, and benchmark-tool compilation.
+
 ## Measured against tree-sitter
 
 Same immutable input, same process and interleaved order for both sides. After
