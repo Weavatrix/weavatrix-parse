@@ -68,6 +68,7 @@ mod calls;
 mod declarations;
 mod modules;
 mod traversal;
+mod types;
 
 /// Whether a name is an HTTP method written as a route-table key.
 fn is_method(name: &str) -> bool {

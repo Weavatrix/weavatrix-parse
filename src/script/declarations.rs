@@ -179,6 +179,12 @@ impl Extractor<'_, '_> {
             exported,
         });
         if kind == DeclarationKind::Method {
+            // `constructor(private orders: OrderService)` is dependency-
+            // injection wiring: the parameter types couple this class to its
+            // providers even though no call site ever names them.
+            if name == "constructor" {
+                self.parameter_type_annotations(index + 1);
+            }
             self.scopes.push(Scope {
                 name,
                 depth: None,
@@ -188,6 +194,9 @@ impl Extractor<'_, '_> {
                 bracket_depth: self.bracket_depth,
             });
             return Some(index + 1);
+        }
+        if self.punct(index + 1, ":") {
+            self.field_type_annotations(index + 2);
         }
         // A field initializer is still written at class-body depth, so
         // stepping through it would read `new Map()` as another member.

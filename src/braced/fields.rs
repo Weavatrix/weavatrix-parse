@@ -1,4 +1,4 @@
-use super::{Declaration, DeclarationKind, Extractor, TokenKind};
+use super::{Declaration, DeclarationKind, Extractor, Reference, ReferenceKind, TokenKind};
 
 impl Extractor<'_, '_> {
     /// A field written inside a type body: `private String name = value;`.
@@ -39,7 +39,59 @@ impl Extractor<'_, '_> {
             owner: self.owner(),
             exported,
         });
+        self.field_type_uses(index, at);
         Some(cursor)
+    }
+
+    /// The types a field is declared with couple the owning type to them:
+    /// `private OrderService orders;` is dependency-injection wiring that no
+    /// call site ever names, so losing it makes the provider look unused.
+    fn field_type_uses(&mut self, start: usize, name_at: usize) {
+        let mut cursor = start;
+        while cursor < name_at {
+            self.type_use(cursor);
+            cursor += 1;
+        }
+    }
+
+    /// Constructor parameters name the types a type is assembled from - the
+    /// other half of dependency-injection wiring.
+    pub(super) fn parameter_type_uses(&mut self, start: usize) {
+        let limit = (start + 128).min(self.tokens.len());
+        let mut depth = 1_i32;
+        let mut cursor = start;
+        while cursor < limit && depth > 0 {
+            if self.punct(cursor, "(") {
+                depth += 1;
+            } else if self.punct(cursor, ")") {
+                depth -= 1;
+            } else {
+                self.type_use(cursor);
+            }
+            cursor += 1;
+        }
+    }
+
+    /// Records one capitalized, unqualified identifier as a type use. An
+    /// annotation name (`@Autowired`) or a member segment (`x.Type`) is not a
+    /// type position.
+    fn type_use(&mut self, cursor: usize) {
+        if self.kind(cursor) != Some(TokenKind::Identifier)
+            || self.punct(cursor.wrapping_sub(1), ".")
+            || self.punct(cursor.wrapping_sub(1), "@")
+            || !self.text(cursor).starts_with(char::is_uppercase)
+        {
+            return;
+        }
+        self.facts.references.push(Reference {
+            name: self.text(cursor).to_owned(),
+            kind: ReferenceKind::Uses,
+            receiver: None,
+            span: self.span(cursor, cursor),
+            owner: self.owner(),
+            string_arguments: Vec::new(),
+            name_arguments: Vec::new(),
+        });
     }
 
     /// Every name declared inside a `const (...)` or `var (...)` group.

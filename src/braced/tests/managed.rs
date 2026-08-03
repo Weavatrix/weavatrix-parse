@@ -150,3 +150,47 @@ fn swift_members_belong_to_the_type_their_extension_names() {
         "the file-level function is back outside, got {items:?}"
     );
 }
+
+#[test]
+fn java_di_wiring_is_use_reference_evidence() {
+    let source = "package com.example;\n\
+         @RestController\n\
+         public class OrderController {\n\
+         \x20 private final OrderService orderService;\n\
+         \x20 @Autowired\n\
+         \x20 private AuditService auditService;\n\
+         \x20 @Autowired\n\
+         \x20 public OrderController(OrderService orderService) {\n\
+         \x20   this.orderService = orderService;\n\
+         \x20 }\n\
+         \x20 public String orders() { return orderService.list(); }\n\
+         }\n";
+    let facts = extract(source, Language::Java);
+    let uses = facts
+        .references
+        .iter()
+        .filter(|reference| reference.kind == ReferenceKind::Uses)
+        .map(|reference| (reference.name.clone(), reference.owner.clone()))
+        .collect::<Vec<_>>();
+
+    assert!(
+        uses.iter()
+            .filter(|(name, owner)| name == "OrderService"
+                && owner.as_deref() == Some("OrderController"))
+            .count()
+            >= 2,
+        "field and constructor both wire OrderService, got {uses:?}"
+    );
+    assert!(
+        uses.iter()
+            .any(|(name, owner)| name == "AuditService"
+                && owner.as_deref() == Some("OrderController")),
+        "an annotated field wires AuditService, got {uses:?}"
+    );
+    assert!(
+        !uses
+            .iter()
+            .any(|(name, _)| name == "Autowired" || name == "RestController"),
+        "annotations are configuration, not type uses: {uses:?}"
+    );
+}

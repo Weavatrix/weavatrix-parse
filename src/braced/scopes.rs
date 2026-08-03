@@ -224,6 +224,15 @@ impl Extractor<'_, '_> {
             owner: self.owner(),
             exported,
         });
+        // A member named like its enclosing type is a constructor, and its
+        // parameter types are dependency-injection wiring.
+        let constructor = self
+            .scopes
+            .last()
+            .is_some_and(|scope| scope.type_body && scope.name == name);
+        if constructor {
+            self.parameter_type_uses(cursor + 2);
+        }
         self.scopes.push(Scope {
             name,
             depth: None,

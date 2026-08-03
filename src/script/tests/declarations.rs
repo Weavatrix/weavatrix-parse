@@ -194,3 +194,44 @@ fn aliased_imports_preserve_original_and_local_names() {
         }]
     );
 }
+
+#[test]
+fn typescript_di_wiring_is_use_reference_evidence() {
+    let source = "import { Controller, Get } from '@nestjs/common';\n\
+         import { UsersService } from './users.service';\n\
+         @Controller('users')\n\
+         export class UsersController {\n\
+           private readonly registry: AuditRegistry;\n\
+           constructor(private readonly usersService: UsersService) {}\n\
+           @Get()\n\
+           findAll(): string[] {\n\
+             return this.usersService.findAll();\n\
+           }\n\
+         }\n";
+    let facts = extract(source, Language::TypeScript);
+    let uses = facts
+        .references
+        .iter()
+        .filter(|reference| reference.kind == ReferenceKind::Uses)
+        .map(|reference| (reference.name.clone(), reference.owner.clone()))
+        .collect::<Vec<_>>();
+
+    assert!(
+        uses.iter()
+            .any(|(name, owner)| name == "UsersService"
+                && owner.as_deref() == Some("UsersController")),
+        "constructor parameter type wires UsersService, got {uses:?}"
+    );
+    assert!(
+        uses.iter()
+            .any(|(name, owner)| name == "AuditRegistry"
+                && owner.as_deref() == Some("UsersController")),
+        "field annotation type wires AuditRegistry, got {uses:?}"
+    );
+    assert!(
+        !uses
+            .iter()
+            .any(|(name, _)| name == "usersService" || name == "Controller"),
+        "parameter names and decorators are not type uses: {uses:?}"
+    );
+}
