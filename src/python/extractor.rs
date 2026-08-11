@@ -43,6 +43,34 @@ impl Extractor<'_, '_> {
         }
     }
 
+    fn span_offsets(&self, start: usize, end: usize) -> Span {
+        let position = |offset: usize| {
+            let prefix = &self.source[..offset.min(self.source.len())];
+            let line = u32::try_from(prefix.bytes().filter(|byte| *byte == b'\n').count() + 1)
+                .unwrap_or(u32::MAX);
+            let column = u32::try_from(
+                prefix
+                    .rsplit_once('\n')
+                    .map_or(prefix, |(_, tail)| tail)
+                    .chars()
+                    .count()
+                    + 1,
+            )
+            .unwrap_or(u32::MAX);
+            (line, column)
+        };
+        let (line, column) = position(start);
+        let (end_line, end_column) = position(end);
+        Span {
+            start,
+            end,
+            line,
+            column,
+            end_line,
+            end_column,
+        }
+    }
+
     /// Closes every scope this column has left.
     fn close_scopes(&mut self, column: u32) {
         while self
@@ -60,6 +88,10 @@ impl Extractor<'_, '_> {
 
     fn step(&mut self, index: usize) -> usize {
         let column = self.tokens[index].column;
+        if self.kind(index) == Some(TokenKind::String) {
+            self.f_string_calls(index);
+            return index + 1;
+        }
         if self.kind(index) != Some(TokenKind::Identifier) {
             return index + 1;
         }
@@ -83,6 +115,40 @@ impl Extractor<'_, '_> {
             return next;
         }
         index + 1
+    }
+
+    fn f_string_calls(&mut self, index: usize) {
+        let is_f_string = index
+            .checked_sub(1)
+            .filter(|previous| self.tokens[*previous].end == self.tokens[index].start)
+            .filter(|previous| self.kind(*previous) == Some(TokenKind::Identifier))
+            .map(|previous| self.text(previous).to_ascii_lowercase())
+            .is_some_and(|prefix| {
+                prefix.contains('f')
+                    && prefix
+                        .chars()
+                        .all(|character| matches!(character, 'f' | 'r' | 'b' | 'u'))
+            });
+        if !is_f_string {
+            return;
+        }
+        let token = &self.tokens[index];
+        let text = token.text(self.source);
+        let owner = self.owner();
+        let mut references = Vec::new();
+        for (start, end) in f_string_sections(text) {
+            let Some(expression) = text.get(start..end) else {
+                continue;
+            };
+            for mut reference in super::extract(expression).references {
+                let base = token.start + start;
+                reference.span =
+                    self.span_offsets(base + reference.span.start, base + reference.span.end);
+                reference.owner.clone_from(&owner);
+                references.push(reference);
+            }
+        }
+        self.facts.references.extend(references);
     }
 
     fn definition(
@@ -292,4 +358,59 @@ impl Extractor<'_, '_> {
         });
         Some(index + 1)
     }
+}
+
+/// Executable `{...}` sections of a Python f-string token.
+///
+/// Doubled braces are literal text. Quotes and escapes inside an expression are tracked so a
+/// dictionary or string literal cannot close the section early.
+fn f_string_sections(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut sections = Vec::new();
+    let mut at = 0_usize;
+    while at < bytes.len() {
+        if bytes[at] != b'{' {
+            at += 1;
+            continue;
+        }
+        if bytes.get(at + 1) == Some(&b'{') {
+            at += 2;
+            continue;
+        }
+        let start = at + 1;
+        let mut cursor = start;
+        let mut depth = 1_u32;
+        let mut quote = None;
+        let mut escaped = false;
+        while cursor < bytes.len() {
+            let byte = bytes[cursor];
+            if let Some(delimiter) = quote {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == delimiter {
+                    quote = None;
+                }
+                cursor += 1;
+                continue;
+            }
+            match byte {
+                b'\'' | b'"' => quote = Some(byte),
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        sections.push((start, cursor));
+                        cursor += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            cursor += 1;
+        }
+        at = cursor.max(at + 1);
+    }
+    sections
 }

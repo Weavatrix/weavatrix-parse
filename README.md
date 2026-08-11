@@ -59,6 +59,9 @@ contracts with byte spans — covers the following languages and formats:
 
 YAML is tokenized but has no structural model yet.
 
+Python f-string expressions are extracted as executable code, including their calls, while
+ordinary string text and doubled literal braces remain prose.
+
 `Facts::test_only_declarations` carries the exact spans of Rust declarations
 that exist only in a test compilation. It is derived from syntax, not from a
 filename: `#[test]`, async test attributes and positive `#[cfg(test)]`

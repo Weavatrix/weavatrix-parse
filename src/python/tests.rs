@@ -114,3 +114,20 @@ fn underscore_names_are_not_exported() {
         .collect::<Vec<_>>();
     assert_eq!(exported, [("public", true), ("_private", false)]);
 }
+
+#[test]
+fn f_string_expressions_keep_calls_and_ignore_literal_text() {
+    let facts = extract(
+        "def path(selector):\n    return f\"/{resolve_target(selector)} resolve_target {{literal}}\"\n",
+    );
+    let calls = facts
+        .references
+        .iter()
+        .filter(|reference| reference.kind == crate::facts::ReferenceKind::Call)
+        .collect::<Vec<_>>();
+
+    assert_eq!(calls.len(), 1, "only executable interpolation is a call");
+    assert_eq!(calls[0].name, "resolve_target");
+    assert_eq!(calls[0].owner.as_deref(), Some("path"));
+    assert_eq!(calls[0].span.line, 2);
+}
