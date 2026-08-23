@@ -15,3 +15,4 @@ mod managed;
 mod native;
 mod robustness;
 mod rust;
+mod swift;

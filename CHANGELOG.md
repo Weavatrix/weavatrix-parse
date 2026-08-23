@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.2 - 2026-08-23
+
+- Swift type heritage is taken from colon lists on types only: the first type
+  on a class inherits, later types and every colon type on a struct, enum,
+  protocol or extension implement, and parameter labels such as
+  `pairing: Pairing` stay ordinary names;
+- interpolated Swift strings yield route fragments
+  (`"\(base)/pair/\(mailbox)"` produces `/pair`);
+- assignments such as `request.httpMethod = "PUT"` and `comps.path = "/ws"`
+  are recorded as call facts;
+- six Swift fact tests, all parser tests, and strict Clippy.
+
 ## 0.3.0 - 2026-08-03
 
 - emit dependency-injection wiring as `Uses` references: Java and C# field

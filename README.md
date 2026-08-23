@@ -62,6 +62,14 @@ YAML is tokenized but has no structural model yet.
 Python f-string expressions are extracted as executable code, including their calls, while
 ordinary string text and doubled literal braces remain prose.
 
+Swift type heritage is taken from colon lists on types only. The first type on a
+class inherits; later types, and every colon type on a struct, enum, protocol or
+extension, implement. Parameter labels such as `pairing: Pairing` are not
+heritage. Interpolated strings also yield route fragments:
+`"\(base)/pair/\(mailbox)"` produces `/pair`. Assignments such as
+`request.httpMethod = "PUT"` and `comps.path = "/ws"` are recorded as call
+facts.
+
 `Facts::test_only_declarations` carries the exact spans of Rust declarations
 that exist only in a test compilation. It is derived from syntax, not from a
 filename: `#[test]`, async test attributes and positive `#[cfg(test)]`

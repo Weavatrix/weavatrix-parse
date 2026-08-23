@@ -42,7 +42,11 @@ impl Extractor<'_, '_> {
             } else if self.punct(scan, ")") {
                 depth -= 1;
             } else if depth == 1 && self.kind(scan) == Some(TokenKind::String) {
-                arguments.push(self.text(scan).trim_matches(['"', '`', '\'']).to_owned());
+                let raw = self.text(scan).trim_matches(['"', '`', '\'']).to_owned();
+                if self.language == super::Language::Swift {
+                    arguments.extend(swift_route_fragments(&raw));
+                }
+                arguments.push(raw);
             }
             scan += 1;
         }
@@ -57,4 +61,35 @@ impl Extractor<'_, '_> {
         });
         Some(index + 1)
     }
+}
+
+/// Route literals hidden inside a Swift interpolated string.
+///
+/// `"\(base)/pair/\(mailbox)"` is one string token. The interpolations are
+/// not separate facts, but the static `/pair` segment is still the path the
+/// client addresses.
+fn swift_route_fragments(raw: &str) -> Vec<String> {
+    if !raw.contains("\\(") {
+        return Vec::new();
+    }
+    let mut routes = Vec::new();
+    let bytes = raw.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'/' {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        index += 1;
+        while index < bytes.len()
+            && (bytes[index].is_ascii_alphanumeric() || matches!(bytes[index], b'-' | b'_'))
+        {
+            index += 1;
+        }
+        if index > start + 1 {
+            routes.push(raw[start..index].to_owned());
+        }
+    }
+    routes
 }

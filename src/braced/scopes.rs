@@ -1,4 +1,6 @@
-use super::{Declaration, DeclarationKind, Extractor, Scope, TokenKind};
+use super::{
+    Declaration, DeclarationKind, Extractor, Language, Reference, ReferenceKind, Scope, TokenKind,
+};
 
 impl Extractor<'_, '_> {
     /// `impl Type`, `impl Trait for Type` and `extension Type` name what their
@@ -30,6 +32,9 @@ impl Extractor<'_, '_> {
         if !self.punct(cursor, "{") {
             return None;
         }
+        if self.language == Language::Swift {
+            self.swift_extension_heritage(keyword + 1, cursor, &name);
+        }
         let test_only = self.test_only_at(keyword);
         self.scopes.push(Scope {
             name,
@@ -38,6 +43,39 @@ impl Extractor<'_, '_> {
             test_only,
         });
         Some(cursor)
+    }
+
+    /// `extension Engine: Equatable, Codable` names the protocols the members
+    /// satisfy. The colon is not `implements`, so the shared heritage walk
+    /// never sees it unless this pass records those types.
+    fn swift_extension_heritage(&mut self, start: usize, end: usize, owner: &str) {
+        let mut cursor = start;
+        let mut active = false;
+        let mut generic = 0_i32;
+        while cursor < end {
+            if self.punct(cursor, "<") {
+                generic += 1;
+            } else if self.punct(cursor, ">") {
+                generic -= 1;
+            } else if generic == 0 && self.punct(cursor, ":") {
+                active = true;
+            } else if active
+                && generic == 0
+                && self.kind(cursor) == Some(TokenKind::Identifier)
+                && !self.punct(cursor.wrapping_sub(1), ".")
+            {
+                self.facts.references.push(Reference {
+                    name: self.text(cursor).to_owned(),
+                    kind: ReferenceKind::Implements,
+                    receiver: None,
+                    span: self.span(cursor, cursor),
+                    owner: Some(owner.to_owned()),
+                    string_arguments: Vec::new(),
+                    name_arguments: Vec::new(),
+                });
+            }
+            cursor += 1;
+        }
     }
 
     /// A C or C++ function, which no keyword introduces: what marks it is a

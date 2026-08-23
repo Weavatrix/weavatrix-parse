@@ -218,6 +218,58 @@ impl Extractor<'_, '_> {
         if let Some(next) = self.call(index) {
             return next;
         }
+        if let Some(next) = self.swift_binding(index) {
+            return next;
+        }
         index + 1
+    }
+
+    /// Swift writes the verb and path as assignments, not as `router.put`.
+    /// `request.httpMethod = "PUT"` and `comps.path = "/ws"` are the only
+    /// place those literals appear, so they have to be call-shaped facts.
+    fn swift_binding(&mut self, index: usize) -> Option<usize> {
+        if self.language != Language::Swift {
+            return None;
+        }
+        let name = self.text(index);
+        if !matches!(name, "path" | "httpMethod") {
+            return None;
+        }
+        if self.punct(index.wrapping_sub(1), "(") || self.punct(index.wrapping_sub(1), ",") {
+            return None;
+        }
+        let mut cursor = index + 1;
+        if self.punct(cursor, ":") {
+            cursor += 1;
+            while cursor < index + 8 && !self.punct(cursor, "=") {
+                cursor += 1;
+            }
+        }
+        if !self.punct(cursor, "=") {
+            return None;
+        }
+        let limit = (index + 16).min(self.tokens.len());
+        for scan in cursor + 1..limit {
+            if self.kind(scan) == Some(TokenKind::String) {
+                let value = self.text(scan).trim_matches(['"', '`', '\'']).to_owned();
+                self.facts.references.push(super::Reference {
+                    kind: super::ReferenceKind::Call,
+                    name: name.to_owned(),
+                    receiver: (index >= 2
+                        && self.punct(index - 1, ".")
+                        && self.kind(index - 2) == Some(TokenKind::Identifier))
+                    .then(|| self.text(index - 2).to_owned()),
+                    span: self.span(index, scan),
+                    owner: self.owner(),
+                    string_arguments: vec![value],
+                    name_arguments: Vec::new(),
+                });
+                return Some(scan + 1);
+            }
+            if self.punct(scan, ";") || self.punct(scan, "{") {
+                break;
+            }
+        }
+        None
     }
 }

@@ -1,4 +1,6 @@
-use super::{Declaration, DeclarationKind, Extractor, Reference, ReferenceKind, Scope, TokenKind};
+use super::{
+    Declaration, DeclarationKind, Extractor, Language, Reference, ReferenceKind, Scope, TokenKind,
+};
 
 impl Extractor<'_, '_> {
     pub(super) fn declaration(&mut self, index: usize) -> Option<usize> {
@@ -67,7 +69,7 @@ impl Extractor<'_, '_> {
             owner: self.owner(),
             exported,
         });
-        self.heritage(name_index + 1, &name);
+        self.heritage(name_index + 1, &name, *kind);
         self.scopes.push(Scope {
             name,
             depth: None,
@@ -88,31 +90,68 @@ impl Extractor<'_, '_> {
     ///
     /// `extends` and `implements` are different edges and the graph keeps them
     /// apart; Go and Solidity write only one relation, so everything after
-    /// their marker inherits.
-    pub(super) fn heritage(&mut self, start: usize, owner: &str) {
+    /// their marker inherits. Swift writes the same list after a colon, and
+    /// only on a type: `func connect(pairing: Pairing)` is a parameter, not
+    /// heritage.
+    pub(super) fn heritage(&mut self, start: usize, owner: &str, declared: DeclarationKind) {
         let limit = (start + 48).min(self.tokens.len());
         let mut cursor = start;
         let mut kind = None;
+        let mut swift_first = matches!(
+            declared,
+            DeclarationKind::Class
+                | DeclarationKind::Struct
+                | DeclarationKind::Enum
+                | DeclarationKind::Interface
+                | DeclarationKind::Trait
+        );
+        let inherit_first = matches!(declared, DeclarationKind::Class);
+        let mut generic = 0_i32;
         while cursor < limit && !self.punct(cursor, "{") && !self.punct(cursor, ";") {
+            if self.punct(cursor, "<") {
+                generic += 1;
+                cursor += 1;
+                continue;
+            }
+            if self.punct(cursor, ">") {
+                generic -= 1;
+                cursor += 1;
+                continue;
+            }
+            if generic > 0 {
+                cursor += 1;
+                continue;
+            }
             match self.text(cursor) {
                 // Solidity writes `contract Vault is Ownable` for what Java
                 // writes as `extends`.
                 "extends" | "is" => kind = Some(ReferenceKind::Inherits),
                 "implements" => kind = Some(ReferenceKind::Implements),
+                ":" if self.language == Language::Swift && swift_first && kind.is_none() => {
+                    kind = Some(if inherit_first {
+                        ReferenceKind::Inherits
+                    } else {
+                        ReferenceKind::Implements
+                    });
+                    swift_first = false;
+                }
                 _ => {
-                    if let Some(kind) = kind
+                    if let Some(current) = kind
                         && self.kind(cursor) == Some(TokenKind::Identifier)
                         && !self.punct(cursor.wrapping_sub(1), ".")
                     {
                         self.facts.references.push(Reference {
                             name: self.text(cursor).to_owned(),
-                            kind,
+                            kind: current,
                             receiver: None,
                             span: self.span(cursor, cursor),
                             owner: Some(owner.to_owned()),
                             string_arguments: Vec::new(),
                             name_arguments: Vec::new(),
                         });
+                        if inherit_first && current == ReferenceKind::Inherits {
+                            kind = Some(ReferenceKind::Implements);
+                        }
                     }
                 }
             }
