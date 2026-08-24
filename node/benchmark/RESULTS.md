@@ -1,46 +1,60 @@
 # Node.js and Bun benchmark snapshot
 
-Measured on 2026-08-24 on Windows x64. Both sides must return the identical
-extracted-fact array — every import specifier, every function declaration, and
-every call, each with its name and one-based line — before either is timed.
-Values are medians of seven measured rounds after two warm-up rounds, with
-execution order alternating per round.
+This file is generated. Every number below was produced by the
+[weavatrix-benchmarks](https://github.com/Weavatrix/weavatrix-benchmarks)
+harness and copied out of its recorded run; none of it is typed by hand.
+That repository states the rules every suite obeys, including what each
+row had to prove equal before it was allowed to be timed.
 
-The competitor is the TypeScript compiler's own parser at 5.9.3. TypeScript 7
-removed the JavaScript compiler API from the npm package, so 5.9.3 is the last
-released build that can run this contract in-process.
+**Question.** How fast is extracting imports, function declarations, and calls with exact positions?
 
-| Source | Facts | Runtime | Weavatrix | TypeScript 5.9.3 | Result |
-| --- | ---: | --- | ---: | ---: | ---: |
-| 3,314 B | 101 | Node 24.15.0 | 0.531 ms | 3.633 ms | Weavatrix 6.84x faster |
-| 33,814 B | 1,001 | Node 24.15.0 | 5.389 ms | 10.510 ms | Weavatrix 1.95x faster |
-| 841,814 B | 24,001 | Node 24.15.0 | 92.754 ms | 118.313 ms | Weavatrix 1.28x faster |
-| 3,314 B | 101 | Bun 1.3.14 | 0.494 ms | 2.874 ms | Weavatrix 5.82x faster |
-| 33,814 B | 1,001 | Bun 1.3.14 | 4.197 ms | 6.838 ms | Weavatrix 1.63x faster |
-| 841,814 B | 24,001 | Bun 1.3.14 | 66.223 ms | 79.453 ms | Weavatrix 1.20x faster |
+**Competitor.** `typescript 5.9.3`
 
-The sweep is the point. On ordinary source files the Rust tokenizer and
-extractor dominate and the margin is large. On one enormous file the margin
-narrows, because the measured time stops being parsing and becomes the JSON
-boundary: at 841,814 source bytes this contract materializes a 5.6 MB fact
-document, and encoding it in Rust plus `JSON.parse` in JavaScript costs more
-than the extraction itself. Repository-scale consumers see the upper rows,
-because they call `extract` once per file.
+| Property | Value |
+| --- | --- |
+| Measured | 2026-08-24 |
+| Platform | win32 x64, 10.0.26200 |
+| CPU | Intel(R) Core(TM) Ultra 7 255U (14 logical cores) |
+| Memory | 47.5 GiB |
+| Rounds | 7 measured, after 2 warm-ups, alternating order, median reported |
+| Independent runs | 3 per suite, each in a fresh process; the table shows the median and the spread |
+| Package | weavatrix-parse 0.3.4 |
 
-These rows measure fact extraction, not tokenization, and they compare only
-TypeScript. `weavatrix-parse` covers 25 languages with one dependency-free
-engine; the TypeScript compiler covers one.
+## node 24.15.0
 
-Reproduce from `node/`:
+Corpus: `[{"sizes":[50,500,12000]}]`
+
+| Contract | Parity | Weavatrix | Competitor | Result |
+| --- | --- | ---: | ---: | ---: |
+| 3,314 source bytes, 101 facts | identical {kind, name, line} array | 0.501 ms | 1.582 ms | Weavatrix 3.13x faster (2.68x–4.77x) |
+| 33,814 source bytes, 1,001 facts | identical {kind, name, line} array | 2.939 ms | 3.503 ms | Weavatrix 1.16x faster (1.16x–1.26x) |
+| 841,814 source bytes, 24,001 facts | identical {kind, name, line} array | 66.511 ms | 68.522 ms | Weavatrix 1.03x faster (1.00x–1.07x) |
+
+## bun 1.3.14
+
+Corpus: `[{"sizes":[50,500,12000]}]`
+
+| Contract | Parity | Weavatrix | Competitor | Result |
+| --- | --- | ---: | ---: | ---: |
+| 3,314 source bytes, 101 facts | identical {kind, name, line} array | 0.269 ms | 1.386 ms | Weavatrix 4.29x faster (4.20x–5.15x) |
+| 33,814 source bytes, 1,001 facts | identical {kind, name, line} array | 2.827 ms | 4.405 ms | Weavatrix 1.59x faster (1.56x–1.60x) |
+| 841,814 source bytes, 24,001 facts | identical {kind, name, line} array | 60.766 ms | 77.281 ms | Weavatrix 1.27x faster (1.24x–1.29x) |
+
+## Reading these rows
+
+- TypeScript 7 removed the JavaScript compiler API from the npm package, so 5.9.3 is the last released build that can run this contract in process.
+- **841,814 source bytes, 24,001 facts** — the margin narrows on one enormous file because the measured time stops being parsing and becomes the JSON boundary
+
+## Reproduce
 
 ```console
-npm ci
-npm run build
-npm run bench
-bun run benchmark/typescript.mjs
+git clone https://github.com/Weavatrix/weavatrix-benchmarks
+cd weavatrix-benchmarks && npm ci
+node run.mjs --suite=parse
+bun run.mjs --suite=parse
+node export.mjs
 ```
 
-`WV_PARSE_FUNCTIONS` overrides the size sweep (a comma-separated list) and
-`WV_PARSE_ROUNDS` the measured round count. CPU, memory bandwidth, and
-JavaScript engine version can materially change these timings. Treat them as a
-reproducible snapshot, not a universal result.
+CPU, memory bandwidth, filesystem, antivirus, and JavaScript engine
+version all move these timings. Treat them as a reproducible snapshot of
+the environment above, not as a universal result.

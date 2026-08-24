@@ -32,7 +32,7 @@
     "build:debug": "napi build --platform --no-js",
     "build:windows": "napi build --platform --release --no-js --target x86_64-pc-windows-msvc",
     "build:windows:debug": "napi build --platform --no-js --target x86_64-pc-windows-msvc",
-    "test": "node --test test/parse.test.js",
+    "test": "node --test test/parse.test.js test/surface.test.js",
     "test:bun": "bun test ./test",
     "bench": "node benchmark/typescript.mjs"
   },
