@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Publish one self-contained `weavatrix-parse` npm package for Node.js 18+ and
+  Bun 1.4+, carrying all six native bindings (Windows, macOS, and glibc Linux
+  on x64 and arm64) in a single tarball with no install script, no download,
+  and no public platform-package names.
+- Expose `extract`, `extractPath`, `tokenize`, and `supportedLanguages` with
+  TypeScript types over the same Rust engine; the JavaScript layer owns only
+  the loader and JSON decoding.
+- Serialize facts and tokens from borrowed views instead of an intermediate
+  value tree, which cut the native side of a 24,001-fact extraction from
+  156 ms to 45 ms and lite tokenization of the same source from 291 ms to
+  45 ms.
+- Add the `Node and Bun native bindings` and `Publish npm package` workflows
+  and an output-equivalent benchmark against the TypeScript compiler parser.
+
 ## 0.3.2 - 2026-08-23
 
 - Swift type heritage is taken from colon lists on types only: the first type

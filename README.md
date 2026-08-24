@@ -3,6 +3,7 @@
 [![CI](https://github.com/Weavatrix/weavatrix-parse/actions/workflows/ci.yml/badge.svg)](https://github.com/Weavatrix/weavatrix-parse/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/weavatrix-parse.svg)](https://crates.io/crates/weavatrix-parse)
 [![docs.rs](https://docs.rs/weavatrix-parse/badge.svg)](https://docs.rs/weavatrix-parse)
+[![npm](https://img.shields.io/npm/v/weavatrix-parse.svg)](https://www.npmjs.com/package/weavatrix-parse)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 The lossless source layer of the [Weavatrix ecosystem](https://weavatrix.com/ecosystem).
@@ -240,6 +241,39 @@ crate so tree-sitter's C grammars never reach it:
 cargo run --release --manifest-path tools/competitor-bench/Cargo.toml -- \
   --output target/competitor.txt <corpus-dir>...
 ```
+
+## Node.js and Bun
+
+The `weavatrix-parse` npm package exposes the same Rust tokenizer and extractor
+through Node-API. It is not a JavaScript port and it executes no repository
+code:
+
+```console
+npm install weavatrix-parse
+# or: bun add weavatrix-parse
+```
+
+```js
+const { extract, extractPath, tokenize } = require('weavatrix-parse')
+
+const facts = extract("import api from './api'\nexport function run() { api() }", 'typescript')
+console.log(facts.imports, facts.declarations, facts.references)
+
+const tokens = tokenize('const answer = 42', 'javascript')
+console.log(tokens.map((token) => token.text).join('') === 'const answer = 42')
+```
+
+One self-contained package supports Node.js 18+ and Bun 1.4+ and carries native
+binaries for Windows, macOS, and glibc Linux on x64 and arm64. It has no
+install script, downloads nothing, and creates no public platform-package
+names. `extractPath(path, source)` selects the language from the extension, and
+`tokenize` is lossless by default with `{ mode: 'lite' }` for code tokens only.
+
+The [Node/Bun benchmark report](node/benchmark/RESULTS.md) compares an
+identical extracted-fact array against the TypeScript compiler's own parser at
+5.9.3, the last release that still ships the JavaScript compiler API. Weavatrix
+won every measured row by 6.84x on a 3,314-byte file down to 1.28x on a single
+841,814-byte file, where the JSON boundary rather than parsing dominates.
 
 ## What this does not do yet
 

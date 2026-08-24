@@ -2,3 +2,6 @@
 *.tmp
 .DS_Store
 tools/*/target/
+/node/target/
+/node/node_modules/
+/node/*.node

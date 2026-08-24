@@ -1,0 +1,43 @@
+{
+  "name": "weavatrix-parse",
+  "version": "0.3.4",
+  "description": "Dependency-free Rust tokenizer and structural extractor for Node.js and Bun",
+  "license": "MIT",
+  "author": "Sergii Ziborov <sergii.ziborov@gmail.com>",
+  "homepage": "https://weavatrix.com/ecosystem",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Weavatrix/weavatrix-parse.git",
+    "directory": "node"
+  },
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": ["lib/", "index.js", "index.d.ts", "*.node", "README.md"],
+  "engines": { "node": ">=18" },
+  "publishConfig": { "registry": "https://registry.npmjs.org/", "access": "public" },
+  "keywords": ["parser", "tokenizer", "rust", "node-api", "bun", "static-analysis"],
+  "napi": {
+    "binaryName": "weavatrix-parse",
+    "targets": [
+      "x86_64-pc-windows-msvc",
+      "aarch64-pc-windows-msvc",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu"
+    ]
+  },
+  "scripts": {
+    "build": "napi build --platform --release --no-js",
+    "build:debug": "napi build --platform --no-js",
+    "build:windows": "napi build --platform --release --no-js --target x86_64-pc-windows-msvc",
+    "build:windows:debug": "napi build --platform --no-js --target x86_64-pc-windows-msvc",
+    "test": "node --test test/parse.test.js",
+    "test:bun": "bun test ./test",
+    "bench": "node benchmark/typescript.mjs"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.8.6",
+    "typescript": "5.9.3"
+  }
+}
