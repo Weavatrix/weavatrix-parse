@@ -1,5 +1,12 @@
 # weavatrix-parse
 
+[![CI](https://github.com/Weavatrix/weavatrix-parse/actions/workflows/ci.yml/badge.svg)](https://github.com/Weavatrix/weavatrix-parse/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/weavatrix-parse.svg)](https://crates.io/crates/weavatrix-parse)
+[![docs.rs](https://docs.rs/weavatrix-parse/badge.svg)](https://docs.rs/weavatrix-parse)
+[![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+The lossless source layer of the [Weavatrix ecosystem](https://weavatrix.com/ecosystem).
+
 Source tokenizer and structural extractor for repository intelligence, and the
 parsing layer the Weavatrix engine is built on. No dependencies, no generated
 grammars, no C toolchain, `unsafe` forbidden.
