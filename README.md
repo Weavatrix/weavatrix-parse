@@ -47,6 +47,10 @@ and whether a quote opens a character literal or a lifetime.
 Structural extraction — declarations, imports, references and typed transport
 contracts with byte spans — covers the following languages and formats:
 
+Each declaration exposes both its stable name/modifier `span` and a full
+`extent` that includes a braced body. Consumers can therefore detect a changed
+function body without storing or exposing source text.
+
 | | |
 |---|---|
 | Curly-brace languages | JavaScript, TypeScript, Rust, Go, Java, C#, C, C++, Swift, Solidity |

@@ -158,10 +158,12 @@ impl Extractor<'_, '_> {
             cursor += 1;
         }
         let name = self.text(name_index).to_owned();
+        let span = self.span(index, name_index);
         self.facts.declarations.push(Declaration {
             name: name.clone(),
             kind: DeclarationKind::Function,
-            span: self.span(index, name_index),
+            span,
+            extent: span,
             owner: None,
             // A shell function is callable by anything that sources the file.
             exported: true,

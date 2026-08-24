@@ -99,10 +99,12 @@ impl Extractor<'_, '_> {
             } else {
                 name
             };
+            let span = self.span(index, cursor.saturating_sub(1));
             self.facts.declarations.push(Declaration {
                 name: qualified.clone(),
                 kind,
-                span: self.span(index, cursor.saturating_sub(1)),
+                span,
+                extent: span,
                 owner: None,
                 // Configuration has no private objects.
                 exported: true,

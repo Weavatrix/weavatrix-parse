@@ -38,6 +38,22 @@ fn go_groups_imports_and_capitalisation_marks_export() {
 }
 
 #[test]
+fn exported_function_extent_includes_its_body() {
+    let source = "package main\n\nfunc CanDelete(viewer bool) bool {\n\treturn !viewer\n}\n";
+    let facts = extract(source, Language::Go);
+    let declaration = facts
+        .declarations
+        .iter()
+        .find(|item| item.name == "CanDelete")
+        .expect("the exported function is declared");
+
+    assert_eq!(
+        &source[declaration.extent.start..declaration.extent.end],
+        "func CanDelete(viewer bool) bool {\n\treturn !viewer\n}"
+    );
+}
+
+#[test]
 fn go_const_and_var_groups_declare_each_line() {
     let source = r#"package main
 const (

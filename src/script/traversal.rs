@@ -71,6 +71,23 @@ impl Extractor<'_, '_> {
         }
     }
 
+    fn finish_declaration(&mut self, index: usize) {
+        let end = self.span(index, index);
+        let declaration = self
+            .scopes
+            .iter()
+            .rev()
+            .find(|scope| scope.depth == Some(self.depth))
+            .and_then(|scope| scope.declaration);
+        if let Some(declaration) = declaration
+            && let Some(fact) = self.facts.declarations.get_mut(declaration)
+        {
+            fact.extent.end = end.end;
+            fact.extent.end_line = end.end_line;
+            fact.extent.end_column = end.end_column;
+        }
+    }
+
     /// Consumes one construct starting at `index`, returning the next index.
     pub(super) fn step(&mut self, index: usize) -> usize {
         if self.punct(index, "{") {
@@ -85,6 +102,7 @@ impl Extractor<'_, '_> {
                 self.scopes.push(Scope {
                     name,
                     depth: Some(self.depth),
+                    declaration: None,
                     member_body: true,
                     fields: false,
                     paren_depth: self.paren_depth,
@@ -94,6 +112,7 @@ impl Extractor<'_, '_> {
             return index + 1;
         }
         if self.punct(index, "}") {
+            self.finish_declaration(index);
             self.depth -= 1;
             return index + 1;
         }

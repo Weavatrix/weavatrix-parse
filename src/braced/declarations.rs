@@ -62,10 +62,12 @@ impl Extractor<'_, '_> {
         let declaration_span = self.span(index, name_index);
         self.drop_waiting();
         self.record_test_only_declaration(test_only, declaration_span);
+        let declaration = self.facts.declarations.len();
         self.facts.declarations.push(Declaration {
             name: name.clone(),
             kind: *kind,
             span: declaration_span,
+            extent: declaration_span,
             owner: self.owner(),
             exported,
         });
@@ -73,6 +75,7 @@ impl Extractor<'_, '_> {
         self.scopes.push(Scope {
             name,
             depth: None,
+            declaration: Some(declaration),
             type_body: matches!(
                 kind,
                 DeclarationKind::Class

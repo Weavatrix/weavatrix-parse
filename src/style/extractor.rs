@@ -119,10 +119,12 @@ impl Extractor<'_, '_> {
         let mut scan = start;
         while scan < cursor {
             if let Some((name, after)) = self.selector_at(scan, &parent) {
+                let selector_span = self.span(scan, after.saturating_sub(1));
                 self.facts.declarations.push(Declaration {
                     name: name.clone(),
                     kind: DeclarationKind::Selector,
-                    span: self.span(scan, after.saturating_sub(1)),
+                    span: selector_span,
+                    extent: selector_span,
                     owner: (!parent.is_empty()).then(|| parent.clone()),
                     // A stylesheet has no private selectors.
                     exported: true,

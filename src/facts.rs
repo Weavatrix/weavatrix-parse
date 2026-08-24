@@ -113,7 +113,10 @@ pub enum DeclarationKind {
 pub struct Declaration {
     pub name: String,
     pub kind: DeclarationKind,
+    /// Exact source occupied by the declaration name and its modifiers.
     pub span: Span,
+    /// Full source occupied by the declaration, including its body when one exists.
+    pub extent: Span,
     /// Enclosing declaration, when the language nests them.
     pub owner: Option<String>,
     /// Whether the declaration leaves the module.

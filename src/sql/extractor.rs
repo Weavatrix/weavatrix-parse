@@ -130,10 +130,12 @@ impl Extractor<'_, '_> {
             });
             return Some(after);
         }
+        let span = self.span(index, after.saturating_sub(1));
         self.facts.declarations.push(Declaration {
             name: name.clone(),
             kind: *kind,
-            span: self.span(index, after.saturating_sub(1)),
+            span,
+            extent: span,
             owner: None,
             // Every SQL object is visible to whoever can reach the schema.
             exported: true,

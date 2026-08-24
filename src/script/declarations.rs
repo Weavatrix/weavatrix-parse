@@ -52,10 +52,13 @@ impl Extractor<'_, '_> {
         } else {
             kind
         };
+        let span = self.span(index, name_index);
+        let declaration = self.facts.declarations.len();
         self.facts.declarations.push(Declaration {
             name: name.clone(),
             kind,
-            span: self.span(index, name_index),
+            span,
+            extent: span,
             owner: self.owner(),
             exported,
         });
@@ -66,6 +69,7 @@ impl Extractor<'_, '_> {
             self.scopes.push(Scope {
                 name,
                 depth: None,
+                declaration: Some(declaration),
                 member_body: true,
                 fields: true,
                 paren_depth: self.paren_depth,
@@ -75,6 +79,7 @@ impl Extractor<'_, '_> {
             self.scopes.push(Scope {
                 name,
                 depth: None,
+                declaration: Some(declaration),
                 member_body: false,
                 fields: false,
                 paren_depth: self.paren_depth,
@@ -171,10 +176,13 @@ impl Extractor<'_, '_> {
         } else {
             return None;
         };
+        let span = self.span(index, index);
+        let declaration = self.facts.declarations.len();
         self.facts.declarations.push(Declaration {
             name: name.clone(),
             kind,
-            span: self.span(index, index),
+            span,
+            extent: span,
             owner: self.owner(),
             exported,
         });
@@ -188,6 +196,7 @@ impl Extractor<'_, '_> {
             self.scopes.push(Scope {
                 name,
                 depth: None,
+                declaration: Some(declaration),
                 member_body: false,
                 fields: false,
                 paren_depth: self.paren_depth,

@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn exported_function_extent_includes_its_body() {
+    let source = "export function canDelete(viewer) {\n  return !viewer;\n}\n";
+    let facts = extract(source, Language::JavaScript);
+    let declaration = facts
+        .declarations
+        .iter()
+        .find(|item| item.name == "canDelete")
+        .expect("the exported function is declared");
+
+    assert_eq!(
+        &source[declaration.extent.start..declaration.extent.end],
+        "export function canDelete(viewer) {\n  return !viewer;\n}"
+    );
+}
+
+#[test]
 fn class_bodies_yield_methods_and_fields_with_their_owner() {
     let source = "export class Service {\n\
          \x20 private cache = new Map();\n\

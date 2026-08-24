@@ -169,10 +169,12 @@ impl Extractor<'_, '_> {
         } else {
             kind
         };
+        let span = self.span(start, name_index);
         self.facts.declarations.push(Declaration {
             name: name.clone(),
             kind,
-            span: self.span(start, name_index),
+            span,
+            extent: span,
             owner: self.owner(),
             // Python exports by convention: a leading underscore is private.
             exported: !name.starts_with('_'),

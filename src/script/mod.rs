@@ -43,6 +43,7 @@ struct Scope {
     /// `{` is seen, so until then the scope is waiting and must not be closed
     /// by the very brace that opens it.
     depth: Option<i32>,
+    declaration: Option<usize>,
     /// Whether members declared directly inside are class or object members.
     member_body: bool,
     /// Classes declare fields; object literals only contribute named methods.

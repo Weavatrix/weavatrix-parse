@@ -39,6 +39,7 @@ impl Extractor<'_, '_> {
         self.scopes.push(Scope {
             name,
             depth: None,
+            declaration: None,
             type_body: true,
             test_only,
         });
@@ -140,6 +141,7 @@ impl Extractor<'_, '_> {
         let test_only = self.test_only_at(index);
         let declaration_span = self.span(index, index);
         self.record_test_only_declaration(test_only, declaration_span);
+        let declaration = self.facts.declarations.len();
         self.facts.declarations.push(Declaration {
             name: name.clone(),
             kind: if owner.is_some() {
@@ -148,6 +150,7 @@ impl Extractor<'_, '_> {
                 DeclarationKind::Function
             },
             span: declaration_span,
+            extent: declaration_span,
             owner,
             // C has no visibility keyword; a static function is file-local and
             // everything else is linkable.
@@ -156,6 +159,7 @@ impl Extractor<'_, '_> {
         self.scopes.push(Scope {
             name,
             depth: None,
+            declaration: Some(declaration),
             type_body: false,
             test_only,
         });
@@ -255,10 +259,12 @@ impl Extractor<'_, '_> {
         let test_only = self.test_only_at(index);
         let declaration_span = self.span(index, cursor);
         self.record_test_only_declaration(test_only, declaration_span);
+        let declaration = self.facts.declarations.len();
         self.facts.declarations.push(Declaration {
             name: name.clone(),
             kind: DeclarationKind::Method,
             span: declaration_span,
+            extent: declaration_span,
             owner: self.owner(),
             exported,
         });
@@ -274,6 +280,7 @@ impl Extractor<'_, '_> {
         self.scopes.push(Scope {
             name,
             depth: None,
+            declaration: Some(declaration),
             type_body: false,
             test_only,
         });

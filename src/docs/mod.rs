@@ -98,6 +98,7 @@ impl Extractor {
             name: name.clone(),
             kind: DeclarationKind::Heading,
             span,
+            extent: span,
             owner: self.headings.last().map(|heading| heading.name.clone()),
             // Every heading in a document is reachable by anchor.
             exported: true,

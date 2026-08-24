@@ -36,6 +36,7 @@ impl Extractor<'_, '_> {
             name,
             kind: DeclarationKind::Field,
             span: declaration_span,
+            extent: declaration_span,
             owner: self.owner(),
             exported,
         });
@@ -217,6 +218,7 @@ impl Extractor<'_, '_> {
             name,
             kind,
             span: declaration_span,
+            extent: declaration_span,
             owner: self.owner(),
             exported,
         });

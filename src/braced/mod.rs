@@ -238,6 +238,7 @@ impl Rules {
 struct Scope {
     name: String,
     depth: Option<i32>,
+    declaration: Option<usize>,
     type_body: bool,
     test_only: bool,
 }
