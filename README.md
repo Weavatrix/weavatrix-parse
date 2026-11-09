@@ -253,8 +253,8 @@ through Node-API. It is not a JavaScript port and it executes no repository
 code:
 
 ```console
-npm install weavatrix-parse@0.3.4
-# or: bun add weavatrix-parse@0.3.4
+npm install weavatrix-parse@0.3.5
+# or: bun add weavatrix-parse@0.3.5
 ```
 
 ```js

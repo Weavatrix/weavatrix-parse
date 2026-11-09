@@ -1,6 +1,6 @@
 {
   "name": "weavatrix-parse",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Dependency-free Rust tokenizer and structural extractor for Node.js and Bun",
   "license": "MIT",
   "author": "Sergii Ziborov <sergii.ziborov@gmail.com>",

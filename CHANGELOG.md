@@ -7,6 +7,8 @@
   are not declarations.
 - A reference span covers the identifier. A column inside the name resolves
   to that reference.
+- The npm package for this parser is `weavatrix-parse@0.3.5`. npm `0.3.4` was
+  published on 2026-08-24 and does not contain these parser fixes.
 - Publish one self-contained `weavatrix-parse` npm package for Node.js 18+ and
   Bun 1.4+, carrying all six native bindings (Windows, macOS, and glibc Linux
   on x64 and arm64) in a single tarball with no install script, no download,
