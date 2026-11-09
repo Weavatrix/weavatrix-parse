@@ -158,3 +158,75 @@ fn a_large_go_group_does_not_swallow_following_functions() {
         "the closing group delimiter must return scanning to the following function"
     );
 }
+
+#[test]
+fn go_methods_own_their_body_and_literals_do_not_declare_parameters() {
+    let source = "\
+package main
+
+func (s *Store) applyLocked() {
+\tidentity.Strict(mpn)
+}
+
+func (c *Client) Account() {}
+
+func fillOffer() {
+\tdesk.Open(func(name string) bool {
+\t\treturn name == \"\"
+\t})
+}
+";
+    let facts = extract(source, Language::Go);
+    let declared = facts
+        .declarations
+        .iter()
+        .map(|item| {
+            (
+                item.name.as_str(),
+                item.kind,
+                item.owner.as_deref(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        declared.contains(&("applyLocked", DeclarationKind::Method, Some("Store"))),
+        "got {declared:?}"
+    );
+    assert!(
+        declared.contains(&("Account", DeclarationKind::Method, Some("Client"))),
+        "got {declared:?}"
+    );
+    assert!(
+        declared.contains(&("fillOffer", DeclarationKind::Function, None)),
+        "got {declared:?}"
+    );
+    for false_name in ["s", "c", "name", "func"] {
+        assert!(
+            !declared.iter().any(|item| item.0 == false_name),
+            "{false_name} is a receiver or parameter, got {declared:?}"
+        );
+    }
+    let strict = facts
+        .references
+        .iter()
+        .find(|reference| reference.name == "Strict")
+        .expect("Strict is called");
+    assert_eq!(strict.owner.as_deref(), Some("applyLocked"));
+    assert_eq!(strict.kind, ReferenceKind::Call);
+    assert!(
+        strict.span.end_column > strict.span.column,
+        "a call span must cover the identifier, got {}..{}",
+        strict.span.column,
+        strict.span.end_column
+    );
+    let open = facts
+        .references
+        .iter()
+        .find(|reference| reference.name == "Open")
+        .expect("Open is called");
+    assert_eq!(
+        open.owner.as_deref(),
+        Some("fillOffer"),
+        "a function literal must not steal the enclosing function"
+    );
+}

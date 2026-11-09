@@ -46,6 +46,12 @@ impl Extractor<'_, '_> {
                 .typed_function(cursor, exported)
                 .or_else(|| self.braced_member(cursor, exported));
         };
+        // `func (recv) Name` and `func(params) { ... }` are a method and a
+        // function literal. They are not a `const (` / `var (` group: reading
+        // them as one declared the receiver and every parameter as a function.
+        if self.language == Language::Go && keyword == "func" && self.punct(cursor + 1, "(") {
+            return Some(self.go_func(cursor));
+        }
         // Go groups declarations: `const ( A = 1\n B = 2 )` declares both, and
         // the keyword is followed by a parenthesis rather than by a name.
         if self.rules.grouped_declarations && self.punct(cursor + 1, "(") {
@@ -160,5 +166,60 @@ impl Extractor<'_, '_> {
             }
             cursor += 1;
         }
+    }
+
+    /// A Go method `func (s *Store) applyLocked` or a function literal
+    /// `func(name string) bool { ... }`.
+    ///
+    /// The method name is the declaration and the open scope, so calls in the
+    /// body belong to the method. The receiver variable and literal parameters
+    /// are not declarations. A literal does not open a scope: its body stays
+    /// with the enclosing function.
+    fn go_func(&mut self, func_index: usize) -> usize {
+        let open = func_index + 1;
+        let close = self.matching_paren(open, self.tokens.len());
+        if !self.punct(close, ")") {
+            return func_index + 1;
+        }
+        let name_index = close + 1;
+        let method = self.kind(name_index) == Some(TokenKind::Identifier)
+            && self.punct(name_index + 1, "(");
+        if !method {
+            return close + 1;
+        }
+        let name = self.text(name_index).to_owned();
+        let exported = name.starts_with(char::is_uppercase);
+        let declaration_span = self.span(func_index, name_index);
+        self.drop_waiting();
+        let declaration = self.facts.declarations.len();
+        self.facts.declarations.push(Declaration {
+            name: name.clone(),
+            kind: DeclarationKind::Method,
+            span: declaration_span,
+            extent: declaration_span,
+            owner: self.go_receiver_type(open + 1, close),
+            exported,
+        });
+        self.scopes.push(Scope {
+            name,
+            depth: None,
+            declaration: Some(declaration),
+            type_body: false,
+            test_only: false,
+        });
+        name_index + 1
+    }
+
+    /// The type in `(s *Store)`, `(s Store)`, `(Store)`, or `(s *pkg.Store)`.
+    /// The receiver variable is the name before the type, so the type is the
+    /// last identifier in the list.
+    fn go_receiver_type(&self, start: usize, close: usize) -> Option<String> {
+        let mut last = None;
+        for cursor in start..close {
+            if self.kind(cursor) == Some(TokenKind::Identifier) {
+                last = Some(self.text(cursor).to_owned());
+            }
+        }
+        last
     }
 }

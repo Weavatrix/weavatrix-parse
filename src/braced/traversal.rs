@@ -1,4 +1,22 @@
 use super::{Extractor, Language, Span, TokenKind};
+use crate::token::Token;
+
+/// Column just past `token`. Columns advance one per byte, including inside
+/// an identifier, so the byte length is the column width. A token that
+/// contains a newline reports the column after its last line.
+fn exclusive_column(token: &Token, source: &str) -> u32 {
+    let text = token.text(source);
+    if text.is_empty() {
+        return token.column;
+    }
+    let tail = text.rsplit('\n').next().unwrap_or(text);
+    let width = u32::try_from(tail.len()).unwrap_or(u32::MAX);
+    if text.contains('\n') {
+        width.saturating_add(1)
+    } else {
+        token.column.saturating_add(width)
+    }
+}
 
 impl Extractor<'_, '_> {
     pub(super) fn run(&mut self) {
@@ -33,7 +51,9 @@ impl Extractor<'_, '_> {
             line: first.line,
             column: first.column,
             end_line: last.line,
-            end_column: last.column,
+            // Exclusive of the last token. A zero-width column matched only the
+            // first byte, so a query inside `Strict` missed the reference.
+            end_column: exclusive_column(last, self.source),
         }
     }
 

@@ -14,6 +14,7 @@ impl Extractor<'_, '_> {
         if matches!(
             name.as_str(),
             "if" | "for" | "while" | "switch" | "match" | "return" | "catch" | "sizeof" | "fn"
+                | "func"
         ) {
             return None;
         }
