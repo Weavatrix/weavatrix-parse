@@ -33,7 +33,7 @@ test('carries exact declaration spans, extents, owners, and test-only scope', ()
     'rs',
   )
   const production = facts.declarations.find((item) => item.name === 'production')
-  assert.deepEqual(production.span, { start: 0, end: 17, line: 1, column: 1, endLine: 1, endColumn: 8 })
+  assert.deepEqual(production.span, { start: 0, end: 17, line: 1, column: 1, endLine: 1, endColumn: 18 })
   assert.deepEqual(production.extent, { start: 0, end: 22, line: 1, column: 1, endLine: 1, endColumn: 22 })
   assert.equal(production.owner, null)
   assert.equal(production.testOnly, false)
