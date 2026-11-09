@@ -4,6 +4,10 @@ Source tokenizer and structural extractor for repository intelligence, and the
 parsing layer the Weavatrix engine is built on. No dependencies, no generated
 grammars, no C toolchain, `unsafe` forbidden.
 
+```toml
+weavatrix-parse = "0.3.4"
+```
+
 ## Why this exists
 
 Line-oriented scanning is wrong in ways that change answers. A route written

@@ -13,7 +13,14 @@ impl Extractor<'_, '_> {
         let name = self.text(index).to_owned();
         if matches!(
             name.as_str(),
-            "if" | "for" | "while" | "switch" | "match" | "return" | "catch" | "sizeof" | "fn"
+            "if" | "for"
+                | "while"
+                | "switch"
+                | "match"
+                | "return"
+                | "catch"
+                | "sizeof"
+                | "fn"
                 | "func"
         ) {
             return None;

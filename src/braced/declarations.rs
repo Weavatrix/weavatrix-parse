@@ -182,8 +182,8 @@ impl Extractor<'_, '_> {
             return func_index + 1;
         }
         let name_index = close + 1;
-        let method = self.kind(name_index) == Some(TokenKind::Identifier)
-            && self.punct(name_index + 1, "(");
+        let method =
+            self.kind(name_index) == Some(TokenKind::Identifier) && self.punct(name_index + 1, "(");
         if !method {
             return close + 1;
         }

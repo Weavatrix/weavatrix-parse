@@ -180,13 +180,7 @@ func fillOffer() {
     let declared = facts
         .declarations
         .iter()
-        .map(|item| {
-            (
-                item.name.as_str(),
-                item.kind,
-                item.owner.as_deref(),
-            )
-        })
+        .map(|item| (item.name.as_str(), item.kind, item.owner.as_deref()))
         .collect::<Vec<_>>();
     assert!(
         declared.contains(&("applyLocked", DeclarationKind::Method, Some("Store"))),

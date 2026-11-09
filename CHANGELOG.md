@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.4 - 2026-11-09
+
+- A Go method `func (recv) Name` is a method declaration. Calls in its body
+  belong to the method. The receiver variable and function-literal parameters
+  are not declarations.
+- A reference span covers the identifier. A column inside the name resolves
+  to that reference.
+
 ## 0.3.2 - 2026-08-23
 
 - Swift type heritage is taken from colon lists on types only: the first type
