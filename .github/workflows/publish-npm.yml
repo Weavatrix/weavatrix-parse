@@ -191,13 +191,26 @@ jobs:
           VERSION="$(node -p "require('./package.json').version")"
           PUBLISHED_HEAD=""
           PREDICATE=""
-          for attempt in $(seq 1 24); do
-            PUBLISHED_HEAD="$(npm view "$PACKAGE@$VERSION" gitHead --json 2>/dev/null | tr -d '\"\r\n' || true)"
-            PREDICATE="$(npm view "$PACKAGE@$VERSION" dist.attestations.provenance.predicateType --json 2>/dev/null | tr -d '\"\r\n' || true)"
-            [[ "$PUBLISHED_HEAD" == "$SOURCE_COMMIT" && "$PREDICATE" == "https://slsa.dev/provenance/v1" ]] && break
-            sleep 5
+          # npm scans a publish before the version is installable. `npm view
+          # --json` prints an error object on 404, so only a 40-character git
+          # SHA counts. A SHA for a different commit fails immediately.
+          # 120 attempts of 10 seconds is 20 minutes.
+          for attempt in $(seq 1 120); do
+            echo "npm provenance verification attempt $attempt/120"
+            CANDIDATE="$(npm view "$PACKAGE@$VERSION" gitHead 2>/dev/null | tr -d '\r\n' || true)"
+            CANDIDATE_PREDICATE="$(npm view "$PACKAGE@$VERSION" dist.attestations.provenance.predicateType 2>/dev/null | tr -d '\r\n' || true)"
+            if [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]; then
+              if [[ "$CANDIDATE" != "$SOURCE_COMMIT" ]]; then
+                echo "npm gitHead mismatch: $CANDIDATE" >&2
+                exit 1
+              fi
+              PUBLISHED_HEAD="$CANDIDATE"
+              PREDICATE="$CANDIDATE_PREDICATE"
+              [[ "$PREDICATE" == "https://slsa.dev/provenance/v1" ]] && break
+            fi
+            sleep 10
           done
-          [[ "$PUBLISHED_HEAD" == "$SOURCE_COMMIT" ]] || { echo "npm gitHead mismatch: $PUBLISHED_HEAD" >&2; exit 1; }
+          [[ "$PUBLISHED_HEAD" == "$SOURCE_COMMIT" ]] || { echo "npm gitHead mismatch: ${PUBLISHED_HEAD:-<empty>}" >&2; exit 1; }
           [[ "$PREDICATE" == "https://slsa.dev/provenance/v1" ]] || { echo "npm provenance is missing" >&2; exit 1; }
 
           OPTIONAL="$(npm view "$PACKAGE@$VERSION" optionalDependencies --json 2>/dev/null || true)"
@@ -209,9 +222,9 @@ jobs:
           # The registry serves from several caches. npm view can already report the
           # new version while npm pack still resolves to a node that has not seen it,
           # which failed this step on a publish that had in fact succeeded.
-          for attempt in $(seq 1 24); do
+          for attempt in $(seq 1 30); do
             npm pack "$PACKAGE@$VERSION" --ignore-scripts --json > registry-pack.json 2>/dev/null && break
-            sleep 5
+            sleep 10
           done
           [[ -s registry-pack.json ]] || {
             echo "registry tarball for $PACKAGE@$VERSION never became fetchable" >&2
@@ -239,9 +252,9 @@ jobs:
           mkdir smoke
           cd smoke
           npm init --yes >/dev/null
-          for attempt in $(seq 1 24); do
+          for attempt in $(seq 1 30); do
             npm install "$PACKAGE@$VERSION" --ignore-scripts && break
-            sleep 5
+            sleep 10
           done
           node -e "require(process.argv[1])" "$PACKAGE"
           npx --yes bun@1.4.0 -e "require(process.argv[1])" "$PACKAGE"
