@@ -123,8 +123,9 @@ The 25 canonical language names, in a stable order.
 
 ### `Span`
 
-Every fact carries one. Offsets are byte offsets into `source`; lines and
-columns are one-based.
+Every fact carries one. `start` and `end` are byte offsets into `source`,
+and `end` is exclusive. Lines and columns are one-based. `endColumn` is the
+column just past the last byte.
 
 ```ts
 { start: number, end: number, line: number, column: number, endLine: number, endColumn: number }
