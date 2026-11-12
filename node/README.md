@@ -8,9 +8,9 @@ reference, and expose?* — with exact byte offsets, without building a syntax
 tree, without a C toolchain, and without executing the source.
 
 ```console
-npm install weavatrix-parse@0.3.5
+npm install weavatrix-parse@0.3.6
 # or
-bun add weavatrix-parse@0.3.5
+bun add weavatrix-parse@0.3.6
 ```
 
 ```js

@@ -106,6 +106,50 @@ fn invalid_dialects_fail_closed_with_exact_diagnostics() {
 }
 
 #[test]
+fn field_names_that_match_declaration_keywords_keep_earlier_rpcs() {
+    let source = concat!(
+        "syntax = \"proto3\";\n",
+        "package demo;\n",
+        "import \"google/protobuf/empty.proto\";\n",
+        "service Test {\n",
+        "  rpc SayHello (HelloRequest) returns (HelloReply) {}\n",
+        "}\n",
+        "message HelloReply {\n",
+        "  string message = 1;\n",
+        "  string service = 2;\n",
+        "}\n",
+        "enum Status {\n",
+        "  package = 0;\n",
+        "  import = 1;\n",
+        "}\n",
+        "message Log {\n",
+        "  enum Kind { service = 0; }\n",
+        "  message Nested { string enum = 1; }\n",
+        "  string message = 5;\n",
+        "}\n",
+    );
+    let facts = extract(source);
+    assert!(facts.diagnostics.is_empty(), "{facts:?}");
+    assert!(facts.contracts.iter().any(|fact| {
+        matches!(fact.kind, ContractKind::ProtobufRpc { .. }) && fact.name == "SayHello"
+    }));
+    assert!(facts.contracts.iter().any(|fact| {
+        fact.name == "Log.Nested"
+            && fact.owner.as_deref() == Some("Log")
+            && fact.kind == ContractKind::ProtobufMessage
+    }));
+    assert_eq!(
+        facts
+            .contracts
+            .iter()
+            .filter(|fact| fact.kind == ContractKind::ProtobufPackage)
+            .count(),
+        1
+    );
+    assert!(!facts.contracts.iter().any(|fact| fact.name == "message"));
+}
+
+#[test]
 fn malformed_supported_dialects_fail_closed() {
     for source in [
         "syntax = \"proto3\"; service Broken {",

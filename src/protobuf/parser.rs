@@ -28,19 +28,22 @@ impl<'source> Parser<'source> {
         let mut index = 0;
         while index < self.tokens.len() {
             self.message_scopes.retain(|(close, _)| index <= *close);
-            let required = matches!(
-                self.text(index),
-                "package" | "import" | "message" | "enum" | "service"
-            );
-            let next = match self.text(index) {
-                "package" => self.parse_package(index),
-                "import" => self.parse_import(index),
-                "message" => self.parse_type(index, ContractKind::ProtobufMessage),
-                "enum" => self.parse_type(index, ContractKind::ProtobufEnum),
-                "service" => self.parse_service(index),
-                _ => None,
+            // A field or enum value can be named message, enum, service, package,
+            // or import. Only a real declaration is required to parse.
+            let declaring = self.at_declaration(index);
+            let next = if declaring {
+                match self.text(index) {
+                    "package" => self.parse_package(index),
+                    "import" => self.parse_import(index),
+                    "message" => self.parse_type(index, ContractKind::ProtobufMessage),
+                    "enum" => self.parse_type(index, ContractKind::ProtobufEnum),
+                    "service" => self.parse_service(index),
+                    _ => None,
+                }
+            } else {
+                None
             };
-            if required && next.is_none() {
+            if declaring && next.is_none() {
                 return self.fail(
                     index,
                     "protobuf.syntax_error",
@@ -51,6 +54,19 @@ impl<'source> Parser<'source> {
         }
         self.facts.contracts.sort_by_key(|fact| fact.span.start);
         self.facts
+    }
+
+    /// `message Name {`, `enum Name {`, and `service Name {` are declarations.
+    /// The same words followed by `=` are field or enum-value names. `package`
+    /// and `import` are declarations only outside a message or enum body.
+    fn at_declaration(&self, index: usize) -> bool {
+        match self.text(index) {
+            "message" | "enum" | "service" => {
+                self.identifier(index + 1) && self.text(index + 2) == "{"
+            }
+            "package" | "import" => self.message_scopes.is_empty(),
+            _ => false,
+        }
     }
 
     fn text(&self, index: usize) -> &str {
@@ -149,16 +165,15 @@ impl<'source> Parser<'source> {
             || simple_name.to_owned(),
             |owner| format!("{owner}.{simple_name}"),
         );
-        let message = kind == ContractKind::ProtobufMessage;
         self.facts.contracts.push(Contract {
             name: qualified_name.clone(),
             kind,
             span: self.tokens.span(name),
             owner,
         });
-        if message {
-            self.message_scopes.push((close, qualified_name));
-        }
+        // Enum bodies hide `package` and `import` used as value names. Message
+        // bodies do the same for field names, and still own nested types.
+        self.message_scopes.push((close, qualified_name));
         // Nested messages and enums remain visible to the main pass.
         Some(name + 1)
     }

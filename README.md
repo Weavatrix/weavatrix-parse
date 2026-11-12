@@ -13,7 +13,7 @@ parsing layer the Weavatrix engine is built on. No dependencies, no generated
 grammars, no C toolchain, `unsafe` forbidden.
 
 ```toml
-weavatrix-parse = "0.3.4"
+weavatrix-parse = "0.3.5"
 ```
 
 ## Why this exists
@@ -190,7 +190,7 @@ GraphQL, protobuf, C#, Swift and Terraform had no files in this selected corpus,
 so there is no throughput result for them. GraphQL and protobuf correctness is
 instead covered by exact typed fixtures. Protobuf accepts proto2, proto3, and
 Editions 2023/2024 (including Edition 2024 `import option`) while preserving
-every byte and extracting typed package/message/enum/service/RPC facts. The
+every byte and extracting typed package/message/enum/service/RPC facts. A field or enum value named `message`, `enum`, `service`, `package`, or `import` stays a name. An incomplete declaration of those words still fails closed. The
 measured code-language range is
 currently 7.40x to 11.31x, not 30x; a 30x target remains unfulfilled.
 The machine-readable table is checked in as
@@ -253,8 +253,8 @@ through Node-API. It is not a JavaScript port and it executes no repository
 code:
 
 ```console
-npm install weavatrix-parse@0.3.5
-# or: bun add weavatrix-parse@0.3.5
+npm install weavatrix-parse@0.3.6
+# or: bun add weavatrix-parse@0.3.6
 ```
 
 ```js

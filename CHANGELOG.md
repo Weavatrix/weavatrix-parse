@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.5 - 2026-11-12
+
+- A protobuf field or enum value may be named `message`, `enum`, `service`,
+  `package`, or `import`. Only a real declaration is required: `message Name {`,
+  `enum Name {`, `service Name {`, and a file-level `package` or `import`.
+  An incomplete declaration still drops the file.
+- Nested messages stay qualified. An enum body hides `package` and `import`
+  used as value names.
+- The npm package for this parser is `weavatrix-parse@0.3.6`. npm `0.3.5` does
+  not contain this protobuf fix.
+
 ## 0.3.4 - 2026-11-09
 
 - A Go method `func (recv) Name` is a method declaration. Calls in its body
